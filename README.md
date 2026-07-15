@@ -4,17 +4,17 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0：工程骨架和可重复构建** 与 **Phase 1：Chrome 主窗口枚举与诊断** 已完成验收。Phase 2 尚未开始。
+**Phase 0：工程骨架和可重复构建** 与 **Phase 1：Chrome 主窗口枚举与诊断** 已完成验收。**Phase 2：任务栏 API 最小可行性实验** 已完成实现和自动验收，正在等待真实任务栏人工观察；Phase 3 尚未开始。
 
 当前提供：
 
 - CMake C++20 工程；
-- `--help`、`--version` 和只读的 `--list` 命令行入口；
+- `--help`、`--version`、只读的 `--list`，以及交互式 `--experiment` 命令行入口；
 - `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log` 基础日志；
-- 无第三方测试框架的命令行与窗口识别规则测试；
+- 无第三方测试框架的命令行、窗口识别和任务栏恢复规则测试；
 - Debug 控制台程序和 Release Windows 子系统程序。
 
-当前版本只读取顶层窗口和对应进程的诊断信息，不会修改 Chrome 窗口，也不会调用任务栏修改 API。
+`--list` 和无参数启动保持只读。只有 `--experiment` 在用户选择一个窗口、选择方法并输入精确的 `APPLY` 后，才会临时修改该窗口的任务栏注册或扩展样式；随后程序会立即执行恢复。
 
 完整开发计划见 [CODEX_TASK_Chrome_Taskbar_Merger_CPP.md](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)。
 
@@ -36,6 +36,7 @@ cmake --build build --config Release
 
 ```powershell
 ctest --test-dir build -C Debug --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 ## 命令行
@@ -44,6 +45,7 @@ ctest --test-dir build -C Debug --output-on-failure
 .\build\Debug\ChromeTaskbarMerger.exe --help
 .\build\Debug\ChromeTaskbarMerger.exe --version
 .\build\Debug\ChromeTaskbarMerger.exe --list
+.\build\Debug\ChromeTaskbarMerger.exe --experiment
 .\build\Debug\ChromeTaskbarMerger.exe
 ```
 
@@ -63,6 +65,29 @@ $LASTEXITCODE
 ```
 
 日志目录无法创建时，程序会输出警告，但不会崩溃。
+
+## Phase 2：交互式任务栏实验
+
+Phase 2 分别实验以下两种 Windows 路径：
+
+- 方法 A：`ITaskbarList::DeleteTab` / `AddTab`；
+- 方法 B：清除 `WS_EX_APPWINDOW`、设置 `WS_EX_TOOLWINDOW`，并使用 `SWP_FRAMECHANGED` 刷新；恢复时写回完整原始扩展样式。
+
+请使用 Debug 控制台版本执行实验。至少保留两个、建议三个 Chrome 主窗口；选择一个非主要且没有未保存工作的重要窗口。程序输入 `APPLY` 前不会修改任何窗口。输入后不要关闭 PowerShell 或强制结束进程，按提示完成观察，程序会自动恢复。WindowTabs 或 Alt+Tab 受到影响会被记录，但 V1 的硬要求只是 Chrome 窗口仍然打开、可到达和可操作。
+
+完整的两轮操作、日志保存方式和异常恢复步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。Phase 2 当前尚未通过视觉硬门槛，不能仅凭 API 返回成功推断任务栏按钮已经消失。
+
+实验退出码：
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | API 与必需人工观察均通过，或在 `APPLY` 前安全取消 |
+| 4 | 前置条件或移除 API 失败 |
+| 5 | 自动恢复未能确认完成，需要人工恢复 |
+| 7 | 用户报告按钮未消失、窗口不可用或按钮未恢复 |
+| 8 | 必需视觉问题回答为未知，结论不完整 |
+
+Phase 2 自动验收已在 Windows 11 10.0.26200、Chrome 150.0.7871.115、CMake 4.3.0、Visual Studio 18 2026 Community、MSVC 19.51.36246 和 Windows SDK 10.0.26100.0 环境完成。Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过；方法 B 还使用两个不可见的合成窗口验证了只修改目标、精确恢复原值和重复恢复幂等性。真实 Chrome 的任务栏绘制结果仍等待用户确认。
 
 ## Phase 0 验收记录
 

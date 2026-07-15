@@ -42,6 +42,7 @@ MinSizeRel/
 *.log
 logs/
 /result.txt
+/phase2-*.txt
 
 # Local editor and operating-system files
 .idea/

@@ -9,6 +9,7 @@ namespace ctm {
 enum class Command {
     Run,
     ListWindows,
+    Experiment,
     ShowHelp,
     ShowVersion,
     Invalid,

@@ -50,6 +50,10 @@ add_library(
         src/command_line.h
         src/logger.cpp
         src/logger.h
+        src/taskbar_controller.cpp
+        src/taskbar_controller.h
+        src/taskbar_experiment.cpp
+        src/taskbar_experiment.h
 )
 
 target_compile_features(ctm_core PUBLIC cxx_std_20)
@@ -68,7 +72,7 @@ target_include_directories(
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 ctm_enable_warnings(ctm_core)
-target_link_libraries(ctm_core PUBLIC Dwmapi)
+target_link_libraries(ctm_core PUBLIC Dwmapi Ole32)
 
 add_executable(
     ChromeTaskbarMerger

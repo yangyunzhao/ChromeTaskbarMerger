@@ -28,6 +28,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::ListWindows};
     }
 
+    if (option == L"--experiment") {
+        return {.command = Command::Experiment};
+    }
+
     return {
         .command = Command::Invalid,
         .error_message = L"Unknown option: " + std::wstring(option),

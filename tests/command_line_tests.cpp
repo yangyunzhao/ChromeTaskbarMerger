@@ -1,10 +1,12 @@
 #include "chrome_window.h"
 #include "command_line.h"
+#include "taskbar_controller.h"
 
 #include <algorithm>
 #include <array>
 #include <iostream>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -62,6 +64,15 @@ void TestListOption() {
            "--list should select the Chrome window listing command");
     Expect(result.error_message.empty(),
            "--list should not produce an error");
+}
+
+void TestExperimentOption() {
+    constexpr std::array arguments = {std::wstring_view(L"--experiment")};
+    const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
+    Expect(result.command == ctm::Command::Experiment,
+           "--experiment should select the Phase 2 experiment command");
+    Expect(result.error_message.empty(),
+           "--experiment should not produce an error");
 }
 
 void TestUnknownOption() {
@@ -264,6 +275,234 @@ void TestEmptyEnumerationSummary() {
            "an empty enumeration should report zero classified windows");
 }
 
+void TestTaskbarHiddenStyleCalculation() {
+    constexpr LONG_PTR original =
+        static_cast<LONG_PTR>(WS_EX_APPWINDOW | WS_EX_TOPMOST |
+                              WS_EX_WINDOWEDGE);
+    const LONG_PTR hidden =
+        ctm::CalculateTaskbarHiddenExtendedStyle(original);
+    Expect((hidden & WS_EX_APPWINDOW) == 0,
+           "the hidden style should clear WS_EX_APPWINDOW");
+    Expect((hidden & WS_EX_TOOLWINDOW) != 0,
+           "the hidden style should set WS_EX_TOOLWINDOW");
+    Expect((hidden & WS_EX_TOPMOST) != 0 && (hidden & WS_EX_WINDOWEDGE) != 0,
+           "unrelated extended-style bits should be preserved");
+}
+
+void TestTaskbarMutationStateTransitions() {
+    ctm::TaskbarMutationState state;
+    Expect(!state.NeedsRestore(),
+           "a fresh mutation state should not need restoration");
+    state.modification_applied = true;
+    Expect(state.NeedsRestore(),
+           "an applied modification should need restoration");
+    state.restore_completed = true;
+    Expect(!state.NeedsRestore(),
+           "a completed restoration should be idempotent");
+}
+
+void TestWindowIdentityMatching() {
+    ctm::WindowIdentity identity;
+    identity.process_id = 10;
+    identity.thread_id = 20;
+    identity.class_name = L"Chrome_WidgetWin_1";
+    Expect(ctm::WindowIdentityValuesMatch(
+               identity, 10, 20, L"Chrome_WidgetWin_1"),
+           "matching PID, TID, and class should preserve window identity");
+    Expect(!ctm::WindowIdentityValuesMatch(
+               identity, 11, 20, L"Chrome_WidgetWin_1"),
+           "a changed PID should reject a possibly reused HWND");
+    Expect(!ctm::WindowIdentityValuesMatch(
+               identity, 10, 20, L"OtherClass"),
+           "a changed class should reject a possibly reused HWND");
+}
+
+void TestRestoreWithoutModificationIsSafeAndIdempotent() {
+    ctm::TaskbarController controller;
+    ctm::TaskbarMutationState state;
+    const ctm::TaskbarOperationResult result =
+        controller.RestoreWindow(&state);
+    Expect(result.succeeded,
+           "restoring an untouched state should succeed safely");
+    Expect(result.skipped,
+           "restoring an untouched state should skip all window APIs");
+    Expect(!state.NeedsRestore(),
+           "restoring an untouched state should remain idempotent");
+}
+
+void TestInvalidWindowRemovalIsSafe() {
+    ctm::TaskbarController controller;
+    ctm::TaskbarMutationState state;
+    ctm::ChromeWindowSnapshot snapshot = MakeManageableChromeSnapshot();
+    snapshot.hwnd = nullptr;
+    const ctm::TaskbarOperationResult result = controller.RemoveWindow(
+        snapshot, ctm::TaskbarMethod::WindowStyle, &state);
+    Expect(!result.succeeded,
+           "removing an invalid HWND should fail without a mutation");
+    Expect(!state.NeedsRestore(),
+           "an invalid HWND should not leave a restoration obligation");
+}
+
+struct ScopedTestWindow {
+    HWND hwnd = nullptr;
+
+    ~ScopedTestWindow() {
+        if (hwnd != nullptr) {
+            DestroyWindow(hwnd);
+        }
+    }
+
+    ScopedTestWindow() = default;
+    ScopedTestWindow(const ScopedTestWindow&) = delete;
+    ScopedTestWindow& operator=(const ScopedTestWindow&) = delete;
+};
+
+[[nodiscard]] ctm::ChromeWindowSnapshot MakeSnapshotForTestWindow(
+    const HWND hwnd) {
+    ctm::ChromeWindowSnapshot snapshot;
+    snapshot.hwnd = hwnd;
+    snapshot.thread_id =
+        GetWindowThreadProcessId(hwnd, &snapshot.process_id);
+
+    std::array<wchar_t, 256> class_name{};
+    const int copied = GetClassNameW(
+        hwnd, class_name.data(), static_cast<int>(class_name.size()));
+    if (copied > 0) {
+        snapshot.class_name.assign(
+            class_name.data(), static_cast<std::size_t>(copied));
+    }
+    return snapshot;
+}
+
+[[nodiscard]] LONG_PTR ReadExtendedStyleForTest(const HWND hwnd) {
+    SetLastError(ERROR_SUCCESS);
+    return GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+}
+
+void TestWindowStyleRoundTripUsesOnlyTheSelectedWindow() {
+    constexpr DWORD initial_extended_style =
+        WS_EX_APPWINDOW | WS_EX_TOPMOST | WS_EX_WINDOWEDGE;
+    ScopedTestWindow selected;
+    ScopedTestWindow untouched;
+    selected.hwnd = CreateWindowExW(
+        initial_extended_style,
+        L"STATIC",
+        L"ChromeTaskbarMerger selected test window",
+        WS_OVERLAPPED,
+        0,
+        0,
+        100,
+        100,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr);
+    untouched.hwnd = CreateWindowExW(
+        initial_extended_style,
+        L"STATIC",
+        L"ChromeTaskbarMerger untouched test window",
+        WS_OVERLAPPED,
+        0,
+        0,
+        100,
+        100,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr);
+    Expect(selected.hwnd != nullptr && untouched.hwnd != nullptr,
+           "hidden synthetic test windows should be created");
+    if (selected.hwnd == nullptr || untouched.hwnd == nullptr) {
+        return;
+    }
+
+    const LONG_PTR selected_before =
+        ReadExtendedStyleForTest(selected.hwnd);
+    const LONG_PTR untouched_before =
+        ReadExtendedStyleForTest(untouched.hwnd);
+
+    ctm::TaskbarController controller;
+    ctm::TaskbarMutationState state;
+    const ctm::TaskbarOperationResult removal = controller.RemoveWindow(
+        MakeSnapshotForTestWindow(selected.hwnd),
+        ctm::TaskbarMethod::WindowStyle,
+        &state);
+    Expect(removal.succeeded,
+           "the selected synthetic window style should be changed");
+    Expect(state.NeedsRestore(),
+           "a successful synthetic style change should require restoration");
+    Expect(ReadExtendedStyleForTest(selected.hwnd) ==
+               ctm::CalculateTaskbarHiddenExtendedStyle(selected_before),
+           "the selected synthetic window should receive the hidden style");
+    Expect(ReadExtendedStyleForTest(untouched.hwnd) == untouched_before,
+           "an unselected synthetic window should remain untouched");
+
+    const ctm::TaskbarOperationResult restoration =
+        controller.RestoreWindow(&state);
+    Expect(restoration.succeeded,
+           "the selected synthetic window style should be restored");
+    Expect(ReadExtendedStyleForTest(selected.hwnd) == selected_before,
+           "restoration should reproduce the exact original extended style");
+    Expect(ReadExtendedStyleForTest(untouched.hwnd) == untouched_before,
+           "restoration should still leave the unselected window untouched");
+
+    const ctm::TaskbarOperationResult repeated_restoration =
+        controller.RestoreWindow(&state);
+    Expect(repeated_restoration.succeeded && repeated_restoration.skipped,
+           "repeated restoration should be safe and idempotent");
+}
+
+void TestRestoreSkipsAChangedWindowIdentity() {
+    ScopedTestWindow window;
+    window.hwnd = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        L"STATIC",
+        L"ChromeTaskbarMerger reused HWND test window",
+        WS_OVERLAPPED,
+        0,
+        0,
+        100,
+        100,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr);
+    Expect(window.hwnd != nullptr,
+           "a synthetic identity test window should be created");
+    if (window.hwnd == nullptr) {
+        return;
+    }
+
+    const LONG_PTR style_before = ReadExtendedStyleForTest(window.hwnd);
+    ctm::TaskbarMutationState state;
+    state.method = ctm::TaskbarMethod::WindowStyle;
+    state.identity.hwnd = window.hwnd;
+    state.identity.process_id = GetCurrentProcessId() + 1;
+    state.identity.thread_id = GetCurrentThreadId();
+    state.identity.class_name = L"STATIC";
+    state.original_extended_style = 0;
+    state.modification_applied = true;
+
+    ctm::TaskbarController controller;
+    const ctm::TaskbarOperationResult restoration =
+        controller.RestoreWindow(&state);
+    Expect(restoration.succeeded && restoration.skipped,
+           "restoration should safely skip a changed window identity");
+    Expect(!state.NeedsRestore(),
+           "a rejected reused HWND should resolve the stale restore state");
+    Expect(ReadExtendedStyleForTest(window.hwnd) == style_before,
+           "a changed window identity should never receive a saved style");
+}
+
+void TestTaskbarListCanInitializeWithoutMutation() {
+    ctm::TaskbarController controller;
+    const ctm::TaskbarOperationResult result =
+        controller.InitializeTaskbarList();
+    Expect(result.succeeded,
+           "ITaskbarList COM initialization and HrInit should succeed");
+    controller.Shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -271,6 +510,7 @@ int main() {
     TestHelpAliases();
     TestVersionOption();
     TestListOption();
+    TestExperimentOption();
     TestUnknownOption();
     TestMultipleOptions();
     TestManageableChromeWindow();
@@ -285,6 +525,14 @@ int main() {
     TestUnsupportedChromeClassIsRejected();
     TestUnavailableWindowMetadataIsRejected();
     TestEmptyEnumerationSummary();
+    TestTaskbarHiddenStyleCalculation();
+    TestTaskbarMutationStateTransitions();
+    TestWindowIdentityMatching();
+    TestRestoreWithoutModificationIsSafeAndIdempotent();
+    TestInvalidWindowRemovalIsSafe();
+    TestWindowStyleRoundTripUsesOnlyTheSelectedWindow();
+    TestRestoreSkipsAChangedWindowIdentity();
+    TestTaskbarListCanInitializeWithoutMutation();
 
     if (failures != 0) {
         std::cerr << failures << " core test(s) failed.\n";

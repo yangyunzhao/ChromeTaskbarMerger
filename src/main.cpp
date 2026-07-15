@@ -2,6 +2,7 @@
 #include "command_line.h"
 #include "ctm/version.h"
 #include "logger.h"
+#include "taskbar_experiment.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -22,9 +23,10 @@ void PrintHelp() {
         << L"Options:\n"
         << L"  --help, -h, /?  Show this help text.\n"
         << L"  --version       Show the application version.\n"
-        << L"  --list          List and classify Chrome top-level windows.\n\n"
-        << L"Phase 1 only inspects windows for diagnostics.\n"
-        << L"It does not modify Chrome windows or taskbar state.\n";
+        << L"  --list          List and classify Chrome top-level windows.\n"
+        << L"  --experiment    Interactively test temporary taskbar removal.\n\n"
+        << L"--list is read-only. --experiment modifies one selected window "
+           L"only after explicit confirmation and then restores it.\n";
 }
 
 int ListChromeWindows(ctm::Logger* const logger) {
@@ -104,6 +106,10 @@ int RunApplication(const std::span<const std::wstring_view> arguments) {
 
         case ctm::Command::ListWindows:
             return ListChromeWindows(logging_available ? &logger : nullptr);
+
+        case ctm::Command::Experiment:
+            return ctm::RunTaskbarExperiment(
+                logging_available ? &logger : nullptr);
 
         case ctm::Command::ShowHelp:
             PrintHelp();
