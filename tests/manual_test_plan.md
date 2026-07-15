@@ -105,7 +105,7 @@ Phase 1 结论：自动验收和真实窗口人工对照均通过，可以进入
 
 ## Phase 2：任务栏 API 最小可行性实验
 
-当前状态：`BLOCKED`，仅等待用户完成真实任务栏视觉验收。实现和不触碰真实 Chrome 的自动验收已经完成，但 API 返回成功不能证明 Windows 11 任务栏按钮真的消失。
+当前状态：`PASS`。实现、自动验收和真实任务栏人工验收均已完成；正式技术路线为方法 A（`ITaskbarList::DeleteTab` / `AddTab`）。
 
 ### 自动验收项目
 
@@ -123,9 +123,32 @@ Phase 1 结论：自动验收和真实窗口人工对照均通过，可以进入
 | 无效 HWND | 安全失败且不产生恢复义务 | 合成测试通过 | PASS |
 | 窗口身份保护 | PID、TID 或类名变化时拒绝陈旧 HWND | 合成测试通过 | PASS |
 | 操作前取消 | 三个取消节点都不修改真实窗口 | 退出码均为 0 | PASS |
-| 真实任务栏视觉结果 | A、B 均实际执行并由用户观察 | 等待用户 | BLOCKED |
+| 真实任务栏视觉结果 | A、B 均实际执行并由用户观察 | A 通过，B 因窗口不可到达而失败 | PASS |
 
 自动验收日期：2026-07-15。自动测试没有对真实 Chrome 调用 `DeleteTab`、`AddTab` 或 `SetWindowLongPtrW`；实际修改只允许在下面的人工步骤中，由用户输入 `APPLY` 后发生。
+
+### 真实窗口验收结果
+
+验收日期：2026-07-15。
+
+验收环境：Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、WindowTabs `ss_2026.07.14`。
+
+| 验收项 | 方法 A：`DeleteTab` / `AddTab` | 方法 B：扩展样式 |
+| --- | --- | --- |
+| 移除 API | `S_OK` | 成功，Win32 错误码 0 |
+| 修改前扩展样式 | `0x00200100` | `0x00200100` |
+| 修改后扩展样式 | 未改变 | `0x00200180` |
+| 任务栏按钮消失 | 是 | 是 |
+| Chrome 仍打开、可到达、可操作 | 是 | 否 |
+| WindowTabs 仍可切换目标窗口 | 是 | 否 |
+| Alt+Tab 仍可到达目标窗口 | 否 | 否 |
+| 恢复 API | `AddTab` 返回 `S_OK` | 成功，精确恢复 `0x00200100` |
+| 无需重启 Explorer 即恢复按钮 | 是 | 是 |
+| 视觉判定 | **PASS** | **FAIL** |
+
+分析结论：方法 A 满足 Phase 2 的全部硬门槛。Alt+Tab 缺项已在 V1 范围修订中明确允许，只要 Chrome 窗口仍能由 WindowTabs 等正常方式到达和操作，因此不影响通过。方法 B 虽然能可靠移除、恢复按钮并精确恢复样式，但在修改期间令目标窗口无法正常到达，不满足最低可用性要求，后续不得作为自动回退。
+
+证据来源：`phase2-method-a.txt`、`phase2-method-b.txt` 和 `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log`。PowerShell transcript 对交互式原生程序的输出记录不完整，因此 API 与样式证据以程序自身的 UTF-8 日志为准；两份 transcript 和日志均只保留在本地，不提交到 Git。
 
 ### 必需人工验收
 
@@ -206,13 +229,13 @@ WindowTabs 影响：
 其他现象：
 ```
 
-当前结论：自动验收通过，人工视觉硬门槛尚未完成，因此 Phase 2 暂未通过，Phase 3 不允许开始。
+当前结论：Phase 2 验收通过，选择方法 A 进入后续开发；Phase 3 允许开始。
 
 ## 后续 Phase
 
 | Phase | 主要人工观察内容 | 当前状态 |
 | --- | --- | --- |
-| Phase 2 | 任务栏按钮是否真实移除和恢复 | BLOCKED：等待人工视觉验收 |
+| Phase 2 | 任务栏按钮是否真实移除和恢复 | PASS：采用方法 A |
 | Phase 3 | 多窗口时是否只保留一个入口 | NOT RUN |
 | Phase 4 | 新建、关闭窗口后的自动同步 | NOT RUN |
 | Phase 5 | Explorer 重启、异常恢复和单实例 | NOT RUN |

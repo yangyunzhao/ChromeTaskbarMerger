@@ -4,7 +4,7 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0：工程骨架和可重复构建** 与 **Phase 1：Chrome 主窗口枚举与诊断** 已完成验收。**Phase 2：任务栏 API 最小可行性实验** 已完成实现和自动验收，正在等待真实任务栏人工观察；Phase 3 尚未开始。
+**Phase 0：工程骨架和可重复构建**、**Phase 1：Chrome 主窗口枚举与诊断** 与 **Phase 2：任务栏 API 最小可行性实验** 均已完成验收。Phase 2 确认 `ITaskbarList::DeleteTab` / `AddTab` 可行；Phase 3 尚未开始。
 
 当前提供：
 
@@ -73,9 +73,9 @@ Phase 2 分别实验以下两种 Windows 路径：
 - 方法 A：`ITaskbarList::DeleteTab` / `AddTab`；
 - 方法 B：清除 `WS_EX_APPWINDOW`、设置 `WS_EX_TOOLWINDOW`，并使用 `SWP_FRAMECHANGED` 刷新；恢复时写回完整原始扩展样式。
 
-请使用 Debug 控制台版本执行实验。至少保留两个、建议三个 Chrome 主窗口；选择一个非主要且没有未保存工作的重要窗口。程序输入 `APPLY` 前不会修改任何窗口。输入后不要关闭 PowerShell 或强制结束进程，按提示完成观察，程序会自动恢复。WindowTabs 或 Alt+Tab 受到影响会被记录，但 V1 的硬要求只是 Chrome 窗口仍然打开、可到达和可操作。
+`--experiment` 保留为可重复诊断入口。请使用 Debug 控制台版本，至少保留两个、建议三个 Chrome 主窗口，并选择一个没有未保存工作的重要窗口。程序输入 `APPLY` 前不会修改任何窗口；输入后不要关闭 PowerShell 或强制结束进程，按提示完成观察，程序会自动恢复。
 
-完整的两轮操作、日志保存方式和异常恢复步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。Phase 2 当前尚未通过视觉硬门槛，不能仅凭 API 返回成功推断任务栏按钮已经消失。
+完整的两轮操作、日志保存方式、实际结果和异常恢复步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。任务栏视觉结论来自用户实际观察，而不是仅凭 API 返回值推断。
 
 实验退出码：
 
@@ -87,7 +87,14 @@ Phase 2 分别实验以下两种 Windows 路径：
 | 7 | 用户报告按钮未消失、窗口不可用或按钮未恢复 |
 | 8 | 必需视觉问题回答为未知，结论不完整 |
 
-Phase 2 自动验收已在 Windows 11 10.0.26200、Chrome 150.0.7871.115、CMake 4.3.0、Visual Studio 18 2026 Community、MSVC 19.51.36246 和 Windows SDK 10.0.26100.0 环境完成。Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过；方法 B 还使用两个不可见的合成窗口验证了只修改目标、精确恢复原值和重复恢复幂等性。真实 Chrome 的任务栏绘制结果仍等待用户确认。
+Phase 2 于 2026-07-15 在 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、WindowTabs `ss_2026.07.14` 环境完成真实窗口验收：
+
+| 方法 | 按钮移除/恢复 | Chrome 与 WindowTabs | Alt+Tab | 结论 |
+| --- | --- | --- | --- | --- |
+| A：`DeleteTab` / `AddTab` | 均成功，无需重启 Explorer | 窗口仍可用，WindowTabs 可切换 | 隐藏期间缺项 | **采用** |
+| B：扩展样式 | 均成功，原样式精确恢复 | 隐藏期间无法正常到达目标窗口 | 缺项 | **淘汰** |
+
+后续实现固定采用方法 A。Alt+Tab 缺项是已知兼容性代价，但不阻塞当前 V1 目标；方法 B 只保留为实验诊断路径，不作为自动回退。自动验收使用 CMake 4.3.0、Visual Studio 18 2026 Community、MSVC 19.51.36246 和 Windows SDK 10.0.26100.0；Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过。
 
 ## Phase 0 验收记录
 
