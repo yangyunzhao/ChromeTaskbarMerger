@@ -1,0 +1,18 @@
+# Keep the repository portable across Windows and remote Unix-based services.
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.ps1 text eol=crlf
+
+*.ico binary
+*.png binary
+*.exe binary
+*.dll binary

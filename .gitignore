@@ -1,0 +1,50 @@
+# CMake build trees and generated metadata
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+compile_commands.json
+
+# Visual Studio and MSVC generated files
+.vs/
+*.VC.db
+*.VC.opendb
+*.suo
+*.user
+*.userosscache
+*.sdf
+*.opensdf
+ipch/
+x64/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# Compiler and linker outputs
+*.obj
+*.o
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.exe
+
+# Runtime and diagnostic output
+*.log
+logs/
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
