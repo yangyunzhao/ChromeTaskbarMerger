@@ -1,6 +1,7 @@
 #include "chrome_window.h"
 #include "command_line.h"
 #include "ctm/version.h"
+#include "fixed_entry_app.h"
 #include "logger.h"
 #include "taskbar_experiment.h"
 
@@ -24,9 +25,10 @@ void PrintHelp() {
         << L"  --help, -h, /?  Show this help text.\n"
         << L"  --version       Show the application version.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
-        << L"  --experiment    Interactively test temporary taskbar removal.\n\n"
-        << L"--list is read-only. --experiment modifies one selected window "
-           L"only after explicit confirmation and then restores it.\n";
+        << L"  --experiment    Interactively test temporary taskbar removal.\n"
+        << L"  --manage        Run the Phase 3 fixed-entry console session.\n\n"
+        << L"--list is read-only. Mutating commands require an explicit "
+           L"confirmation and restore their tracked changes on normal exit.\n";
 }
 
 int ListChromeWindows(ctm::Logger* const logger) {
@@ -97,10 +99,11 @@ int RunApplication(const std::span<const std::wstring_view> arguments) {
     switch (options.command) {
         case ctm::Command::Run:
             std::wcout << ctm::kApplicationName << L" " << ctm::kVersion
-                       << L"\nPhase 1 diagnostics are ready. No taskbar changes were made.\n";
+                       << L"\nDiagnostics are ready. No taskbar changes were made.\n"
+                       << L"Use --manage to start the explicit Phase 3 session.\n";
             if (logging_available) {
                 std::wcout << L"Log: " << logger.log_path().wstring() << L'\n';
-                logger.Info("Phase 1 startup completed; no taskbar APIs were invoked.");
+                logger.Info("Read-only startup completed; no taskbar APIs were invoked.");
             }
             return 0;
 
@@ -109,6 +112,10 @@ int RunApplication(const std::span<const std::wstring_view> arguments) {
 
         case ctm::Command::Experiment:
             return ctm::RunTaskbarExperiment(
+                logging_available ? &logger : nullptr);
+
+        case ctm::Command::Manage:
+            return ctm::RunFixedEntryApplication(
                 logging_available ? &logger : nullptr);
 
         case ctm::Command::ShowHelp:

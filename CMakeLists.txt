@@ -48,6 +48,10 @@ add_library(
         src/chrome_window.h
         src/command_line.cpp
         src/command_line.h
+        src/fixed_entry_app.cpp
+        src/fixed_entry_app.h
+        src/fixed_entry_manager.cpp
+        src/fixed_entry_manager.h
         src/logger.cpp
         src/logger.h
         src/taskbar_controller.cpp

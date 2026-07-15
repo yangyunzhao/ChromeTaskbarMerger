@@ -10,6 +10,7 @@ enum class Command {
     Run,
     ListWindows,
     Experiment,
+    Manage,
     ShowHelp,
     ShowVersion,
     Invalid,

@@ -56,10 +56,22 @@ struct TaskbarOperationResult {
     std::wstring_view class_name) noexcept;
 [[nodiscard]] std::wstring_view TaskbarMethodText(TaskbarMethod method);
 
-class TaskbarController final {
+class ITaskbarMutationController {
+public:
+    virtual ~ITaskbarMutationController() = default;
+
+    [[nodiscard]] virtual TaskbarOperationResult RemoveWindow(
+        const ChromeWindowSnapshot& snapshot,
+        TaskbarMethod method,
+        TaskbarMutationState* state) = 0;
+    [[nodiscard]] virtual TaskbarOperationResult RestoreWindow(
+        TaskbarMutationState* state) = 0;
+};
+
+class TaskbarController final : public ITaskbarMutationController {
 public:
     TaskbarController() = default;
-    ~TaskbarController();
+    ~TaskbarController() override;
 
     TaskbarController(const TaskbarController&) = delete;
     TaskbarController& operator=(const TaskbarController&) = delete;
@@ -70,9 +82,9 @@ public:
     [[nodiscard]] TaskbarOperationResult RemoveWindow(
         const ChromeWindowSnapshot& snapshot,
         TaskbarMethod method,
-        TaskbarMutationState* state);
+        TaskbarMutationState* state) override;
     [[nodiscard]] TaskbarOperationResult RestoreWindow(
-        TaskbarMutationState* state);
+        TaskbarMutationState* state) override;
     void Shutdown();
 
 private:

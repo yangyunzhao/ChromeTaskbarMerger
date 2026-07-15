@@ -229,14 +229,114 @@ WindowTabs 影响：
 其他现象：
 ```
 
-当前结论：Phase 2 验收通过，选择方法 A 进入后续开发；Phase 3 允许开始。
+Phase 2 结论：验收通过，选择方法 A 进入后续开发。Phase 3 随后已开始，并停在下述人工验收门槛。
+
+## Phase 3：固定主入口 MVP
+
+当前状态：`BLOCKED`，实现与自动验收通过，等待真实任务栏人工观察。
+
+### 自动验收项目
+
+| 项目 | 预期结果 | 实际结果 | 状态 |
+| --- | --- | --- | --- |
+| Debug 构建 | `/W4` 下无错误或警告 | 构建成功，无警告 | PASS |
+| Release 构建 | `/W4` 下无错误或警告 | 构建成功，无警告 | PASS |
+| Debug CTest | 核心与固定入口测试全部通过 | 2/2 通过 | PASS |
+| Release CTest | 核心与固定入口测试全部通过 | 2/2 通过 | PASS |
+| 0/1 个窗口 | 不调用任务栏移除 API | 伪后端测试通过 | PASS |
+| 3/5 个窗口 | 固定一个入口，分别只移除 2/4 个 | 伪后端测试通过 | PASS |
+| 主入口选择 | 前台 Chrome 优先；否则稳定回退 | 伪后端测试通过 | PASS |
+| 固定主入口 | 主入口有效时不随前台变化 | 伪后端测试通过 | PASS |
+| 重复同步 | 不重复调用 `DeleteTab` | 伪后端测试通过 | PASS |
+| 恢复全部 | 只对成功移除项调用一次 `AddTab` | 伪后端测试通过 | PASS |
+| 恢复后重新应用 | 保留固定入口并重新移除其他项 | 伪后端测试通过 | PASS |
+| 失败处理 | 恢复失败保留重试，协调失败不新增移除 | 伪后端测试通过 | PASS |
+| 主入口失效 | 提升剩余前台 Chrome 并恢复其按钮 | 伪后端测试通过 | PASS |
+| HWND 身份变化 | 旧状态与新 PID 身份分开处理 | 伪后端与真实控制器测试通过 | PASS |
+| WindowTabs 前置保护 | 同步前检查，缺失时不新增移除并恢复 | 实现审计与 Debug 构建通过 | PASS |
+| `--manage` 操作前取消 | 不初始化 COM、不修改任务栏、退出码 0 | 本机安全路径通过 | PASS |
+| 命令行回归 | 帮助、默认启动、`--list`、非法参数正确 | 退出码 0/0/0/2 | PASS |
+| 真实任务栏单入口 | 1、3、5 个窗口均符合预期 | 等待用户 | BLOCKED |
+
+自动验收日期：2026-07-15。自动验收未输入 `MANAGE`，因此没有对真实 Chrome 批量调用 `DeleteTab`。
+
+### 必需人工验收
+
+使用 Debug 版本分别完成 1、3、5 个 Chrome 主窗口的三轮测试。每轮开始前确认 WindowTabs 正在运行并保存重要内容。PowerShell transcript 对原生交互输出可能不完整，API 证据以 `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log` 为准；transcript 主要用于保留命令顺序。
+
+每轮使用对应文件开始记录：
+
+```powershell
+Start-Transcript -Path .\phase3-1-window.txt -Force
+.\build\Debug\ChromeTaskbarMerger.exe --manage
+```
+
+三窗口和五窗口轮次分别把文件名改为 `phase3-3-windows.txt`、`phase3-5-windows.txt`。
+
+#### 一窗口轮次
+
+1. 只保留 1 个 Chrome 主窗口，确认任务栏有 1 个 Chrome 入口；
+2. 启动 `--manage`，核对列出的窗口后输入大写 `MANAGE`；
+3. 确认同步报告为 `SUCCESS`、`Tracked removals` 为 0，任务栏仍是 1 个入口；
+4. 输入 `s`，确认没有新的 `DeleteTab`/`AddTab` 操作；
+5. 输入 `q`，确认正常退出且任务栏仍为 1 个入口；
+6. 记录退出码并结束 transcript：
+
+   ```powershell
+   $LASTEXITCODE
+   Stop-Transcript
+   ```
+
+#### 三窗口轮次
+
+1. 打开 3 个独立 Chrome 主窗口，确认任务栏最初有 3 个入口；
+2. 启动 `--manage` 并输入 `MANAGE`，确认任务栏只剩 1 个入口；
+3. 记录报告中的 `Fixed main entry` HWND，并确认 `Tracked removals after operation` 为 2；
+4. 使用 WindowTabs 依次切换并操作全部 3 个 Chrome，确认都仍打开、可到达和可操作；
+5. 切换若干次后回到控制台输入 `s`，确认主入口 HWND 不变、`Already removed` 为 2，且本次报告没有新的 `DeleteTab`/`AddTab`；
+6. 输入 `r`，确认 3 个任务栏按钮都恢复且管理状态显示为 `paused`；
+7. 输入 `a`，确认重新只剩 1 个入口，主入口 HWND 与之前一致；
+8. 输入 `q`，确认程序退出后 3 个任务栏按钮全部恢复；
+9. 记录 `$LASTEXITCODE`，再执行 `Stop-Transcript`。
+
+#### 五窗口轮次
+
+1. 打开 5 个独立 Chrome 主窗口，确认任务栏最初有 5 个入口；
+2. 启动 `--manage` 并输入 `MANAGE`，确认只剩 1 个入口，报告中的跟踪移除数为 4；
+3. 使用 WindowTabs 依次访问全部 5 个窗口，确认都可操作；
+4. 切换后输入 `s`，确认固定主入口不变、`Already removed` 为 4，且没有重复任务栏 API 调用；
+5. 输入 `q`，确认退出后 5 个任务栏按钮全部恢复；
+6. 记录 `$LASTEXITCODE`，再执行 `Stop-Transcript`。
+
+`phase3-*.txt` 可能包含窗口标题、HWND 和 PID，已由 `.gitignore` 排除，不会进入未来 remote。
+
+### 异常时的安全恢复
+
+- 输入 `MANAGE` 后不要关闭终端或强制结束进程；Ctrl+C 会被忽略，请输入 `r` 或 `q`。
+- WindowTabs 意外退出后，输入 `s` 会触发前置检查、恢复全部并暂停；也可以直接输入 `r`。
+- 若看到恢复警告或退出码 `5`，停止后续轮次，不要再次运行 `--manage`。保留 transcript 和默认日志，通过 `Ctrl+Shift+Esc` 打开任务管理器，重启“Windows 资源管理器”，然后告知 Codex。
+- 任一同步报告为 `FAIL` 时，先输入 `r`；确认所有按钮恢复后再退出并把日志交给 Codex。
+
+### 用户回报模板
+
+```text
+1 窗口：管理后入口数；重复扫描是否无调用；退出后入口数；退出码
+3 窗口：管理后入口数；全部窗口可用 是/否；主入口是否固定；r 后入口数；a 后入口数；q 后入口数；退出码
+5 窗口：管理后入口数；全部窗口可用 是/否；主入口是否固定；q 后入口数；退出码
+WindowTabs 影响：
+是否闪烁或被自动恢复：
+是否出现 FAIL 或恢复警告：
+其他现象：
+```
+
+通过标准：1、3、5 个窗口时分别保持恰好 1 个任务栏入口；所有 Chrome 均可由 WindowTabs 到达和操作；主入口不随切换变化；重复同步不重复调用 API；`r` 和 `q` 恢复本会话修改。完成前 Phase 3 暂未通过，Phase 4 不允许开始。
 
 ## 后续 Phase
 
 | Phase | 主要人工观察内容 | 当前状态 |
 | --- | --- | --- |
 | Phase 2 | 任务栏按钮是否真实移除和恢复 | PASS：采用方法 A |
-| Phase 3 | 多窗口时是否只保留一个入口 | NOT RUN |
+| Phase 3 | 多窗口时是否只保留一个入口 | BLOCKED：等待人工视觉验收 |
 | Phase 4 | 新建、关闭窗口后的自动同步 | NOT RUN |
 | Phase 5 | Explorer 重启、异常恢复和单实例 | NOT RUN |
 | Phase 6 | 托盘菜单和 Release 使用体验 | NOT RUN |

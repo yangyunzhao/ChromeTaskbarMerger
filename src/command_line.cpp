@@ -32,6 +32,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::Experiment};
     }
 
+    if (option == L"--manage") {
+        return {.command = Command::Manage};
+    }
+
     return {
         .command = Command::Invalid,
         .error_message = L"Unknown option: " + std::wstring(option),
