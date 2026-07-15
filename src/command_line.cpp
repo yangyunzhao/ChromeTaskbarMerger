@@ -24,6 +24,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::ShowVersion};
     }
 
+    if (option == L"--list") {
+        return {.command = Command::ListWindows};
+    }
+
     return {
         .command = Command::Invalid,
         .error_message = L"Unknown option: " + std::wstring(option),

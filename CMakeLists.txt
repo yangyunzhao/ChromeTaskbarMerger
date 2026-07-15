@@ -44,6 +44,8 @@ endfunction()
 add_library(
     ctm_core
     STATIC
+        src/chrome_window.cpp
+        src/chrome_window.h
         src/command_line.cpp
         src/command_line.h
         src/logger.cpp
@@ -66,6 +68,7 @@ target_include_directories(
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 ctm_enable_warnings(ctm_core)
+target_link_libraries(ctm_core PUBLIC Dwmapi)
 
 add_executable(
     ChromeTaskbarMerger

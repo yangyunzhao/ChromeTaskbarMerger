@@ -11,6 +11,6 @@ target_link_libraries(
 ctm_enable_warnings(ChromeTaskbarMergerTests)
 
 add_test(
-    NAME command_line
+    NAME core
     COMMAND ChromeTaskbarMergerTests
 )

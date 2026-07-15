@@ -46,6 +46,41 @@ namespace {
     return output.str();
 }
 
+[[nodiscard]] std::string WideToUtf8(const std::wstring_view message) {
+    if (message.empty()) {
+        return {};
+    }
+
+    const int required_size = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        message.data(),
+        static_cast<int>(message.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (required_size <= 0) {
+        return "<invalid UTF-16 log message>";
+    }
+
+    std::string encoded(static_cast<std::size_t>(required_size), '\0');
+    const int written = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        message.data(),
+        static_cast<int>(message.size()),
+        encoded.data(),
+        required_size,
+        nullptr,
+        nullptr);
+    if (written != required_size) {
+        return "<failed to encode UTF-16 log message>";
+    }
+
+    return encoded;
+}
+
 }  // namespace
 
 bool Logger::Initialize(std::wstring* const error_message) {
@@ -89,8 +124,16 @@ void Logger::Info(const std::string_view message) {
     Write("INFO", message);
 }
 
+void Logger::Info(const std::wstring_view message) {
+    Write("INFO", WideToUtf8(message));
+}
+
 void Logger::Error(const std::string_view message) {
     Write("ERROR", message);
+}
+
+void Logger::Error(const std::wstring_view message) {
+    Write("ERROR", WideToUtf8(message));
 }
 
 void Logger::Write(const std::string_view level,

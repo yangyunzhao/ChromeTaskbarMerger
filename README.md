@@ -4,17 +4,17 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0：工程骨架和可重复构建** 已完成并通过自动验收。Phase 1 尚未开始。
+**Phase 0：工程骨架和可重复构建** 已完成。**Phase 1：Chrome 主窗口枚举与诊断** 已通过自动验收，正在等待真实窗口人工对照。
 
-此阶段只提供：
+当前提供：
 
 - CMake C++20 工程；
-- `--help` 和 `--version` 命令行入口；
+- `--help`、`--version` 和只读的 `--list` 命令行入口；
 - `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log` 基础日志；
-- 无第三方测试框架的命令行解析测试；
+- 无第三方测试框架的命令行与窗口识别规则测试；
 - Debug 控制台程序和 Release Windows 子系统程序。
 
-当前版本不会枚举或修改 Chrome 窗口，也不会调用任务栏修改 API。
+当前版本只读取顶层窗口和对应进程的诊断信息，不会修改 Chrome 窗口，也不会调用任务栏修改 API。
 
 完整开发计划见 [CODEX_TASK_Chrome_Taskbar_Merger_CPP.md](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)。
 
@@ -38,11 +38,12 @@ cmake --build build --config Release
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-## Phase 0 命令行
+## 命令行
 
 ```powershell
 .\build\Debug\ChromeTaskbarMerger.exe --help
 .\build\Debug\ChromeTaskbarMerger.exe --version
+.\build\Debug\ChromeTaskbarMerger.exe --list
 .\build\Debug\ChromeTaskbarMerger.exe
 ```
 
@@ -91,3 +92,28 @@ $LASTEXITCODE
 | Phase 0 任务栏 API 安全扫描 | PASS，未发现任务栏修改 API |
 
 Phase 0 不涉及任务栏视觉变化，因此不需要用户手动验收。
+
+## Phase 1：Chrome 窗口诊断
+
+`--list` 会枚举系统顶层窗口，使用进程完整路径确认 `chrome.exe`，并集中评估：
+
+- 是否为顶层、可见窗口；
+- 标题和窗口类是否有效；
+- 类名是否兼容 `Chrome_WidgetWin_*`；
+- 是否带有 `WS_CHILD`、`WS_EX_TOOLWINDOW` 或 `WS_EX_NOACTIVATE`；
+- HWND、PID、TID、Owner、普通样式、扩展样式和 DWM cloaked 状态。
+
+输出会同时列出 `MANAGEABLE` 和 `EXCLUDED` Chrome 候选，并为被排除窗口打印具体原因。窗口标题不参与 `chrome.exe` 身份判断。
+
+2026-07-15 自动诊断快照：
+
+```text
+Scanned top-level windows: 480
+Process-query failures: 0
+Chrome candidates: 13
+Manageable: 2; Excluded: 11
+```
+
+自动检查结果：Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过，Debug 与 Release 的 `--list` 均返回退出码 `0`，UTF-8 日志包含完整窗口诊断信息。
+
+上述数量会随桌面窗口变化，不能代替用户对真实 Chrome 主窗口的人工确认。Phase 1 在人工对照通过前不会标记为完成。
