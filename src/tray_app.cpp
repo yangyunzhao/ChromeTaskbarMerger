@@ -1,6 +1,7 @@
 #include "tray_app.h"
 
 #include "chrome_window.h"
+#include "ctm/version.h"
 #include "fixed_entry_manager.h"
 #include "logger.h"
 #include "recovery_journal.h"
@@ -9,6 +10,7 @@
 #include "windowtabs_presence.h"
 
 #include <Windows.h>
+#include <CommCtrl.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -26,6 +28,7 @@ namespace {
 constexpr UINT kTrayCallbackMessage = WM_APP + 10;
 constexpr UINT_PTR kScanTimerId = 1;
 constexpr UINT kTrayIconId = 1;
+constexpr int kApplicationIconResourceId = 101;
 
 constexpr UINT kMenuStatus = 100;
 constexpr UINT kMenuScanNow = 101;
@@ -33,7 +36,11 @@ constexpr UINT kMenuPause = 102;
 constexpr UINT kMenuResume = 103;
 constexpr UINT kMenuRestoreAll = 104;
 constexpr UINT kMenuOpenLogs = 105;
-constexpr UINT kMenuExit = 106;
+constexpr UINT kMenuAbout = 106;
+constexpr UINT kMenuExit = 107;
+
+constexpr wchar_t kProjectUrl[] =
+    L"https://github.com/yangyunzhao/ChromeTaskbarMerger";
 
 struct ManageableWindowScan {
     bool succeeded = false;
@@ -178,11 +185,35 @@ public:
 
 private:
     [[nodiscard]] bool CreateHiddenWindow() {
+        large_icon_ = static_cast<HICON>(LoadImageW(
+            instance_,
+            MAKEINTRESOURCEW(kApplicationIconResourceId),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+            LR_SHARED));
+        small_icon_ = static_cast<HICON>(LoadImageW(
+            instance_,
+            MAKEINTRESOURCEW(kApplicationIconResourceId),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_SHARED));
+        if (large_icon_ == nullptr || small_icon_ == nullptr) {
+            LogError(L"Loading the embedded application icon failed; the "
+                     L"Windows fallback icon will be used.");
+        }
+
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
         window_class.lpfnWndProc = &TrayApplication::WindowProcedure;
         window_class.hInstance = instance_;
-        window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        window_class.hIcon = large_icon_ != nullptr
+                                 ? large_icon_
+                                 : LoadIconW(nullptr, IDI_APPLICATION);
+        window_class.hIconSm = small_icon_ != nullptr
+                                   ? small_icon_
+                                   : LoadIconW(nullptr, IDI_APPLICATION);
         window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         window_class.lpszClassName = kTrayWindowClassName;
         if (RegisterClassExW(&window_class) == 0) {
@@ -227,7 +258,9 @@ private:
         data.uID = kTrayIconId;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = kTrayCallbackMessage;
-        data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        data.hIcon = small_icon_ != nullptr
+                         ? small_icon_
+                         : LoadIconW(nullptr, IDI_APPLICATION);
         const std::wstring tip = BuildTooltip();
         wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
         if (Shell_NotifyIconW(NIM_ADD, &data) == FALSE) {
@@ -534,6 +567,101 @@ private:
         window_ = nullptr;
     }
 
+    static HRESULT CALLBACK AboutDialogCallback(
+        const HWND dialog,
+        const UINT notification,
+        const WPARAM,
+        const LPARAM parameter,
+        const LONG_PTR callback_data) {
+        if (notification != TDN_HYPERLINK_CLICKED || parameter == 0) {
+            return S_OK;
+        }
+
+        const auto* const url = reinterpret_cast<const wchar_t*>(parameter);
+        const HINSTANCE result = ShellExecuteW(
+            dialog, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<std::intptr_t>(result) <= 32) {
+            auto* const application = reinterpret_cast<TrayApplication*>(
+                callback_data);
+            if (application != nullptr) {
+                application->LogError(
+                    L"Opening the project URL from the About dialog failed.");
+            }
+            MessageBoxW(
+                dialog,
+                L"无法打开默认浏览器。\n\n"
+                L"项目地址：\n"
+                L"https://github.com/yangyunzhao/ChromeTaskbarMerger",
+                L"ChromeTaskbarMerger",
+                MB_OK | MB_ICONWARNING);
+        }
+        return S_OK;
+    }
+
+    void ShowAboutDialog() {
+        const std::wstring instruction =
+            L"ChromeTaskbarMerger " + std::wstring(kVersion);
+        constexpr wchar_t content[] =
+            L"Windows 任务栏 Chrome 单入口工具\n\n"
+            L"开发人员：杨云召\n\n"
+            L"GitHub：<a href=\"https://github.com/yangyunzhao/"
+            L"ChromeTaskbarMerger\">https://github.com/yangyunzhao/"
+            L"ChromeTaskbarMerger</a>";
+
+        TASKDIALOGCONFIG configuration{};
+        configuration.cbSize = sizeof(configuration);
+        configuration.hwndParent = window_;
+        configuration.hInstance = instance_;
+        configuration.dwFlags =
+            TDF_ENABLE_HYPERLINKS |
+            TDF_ALLOW_DIALOG_CANCELLATION |
+            TDF_POSITION_RELATIVE_TO_WINDOW |
+            TDF_SIZE_TO_CONTENT;
+        if (large_icon_ != nullptr) {
+            configuration.dwFlags |= TDF_USE_HICON_MAIN;
+            configuration.hMainIcon = large_icon_;
+        }
+        configuration.dwCommonButtons = TDCBF_OK_BUTTON;
+        configuration.pszWindowTitle = L"关于 ChromeTaskbarMerger";
+        configuration.pszMainInstruction = instruction.c_str();
+        configuration.pszContent = content;
+        configuration.pszFooter = L"许可证：MIT";
+        configuration.pfCallback = &TrayApplication::AboutDialogCallback;
+        configuration.lpCallbackData = reinterpret_cast<LONG_PTR>(this);
+
+        using TaskDialogIndirectFunction = HRESULT(WINAPI*)(
+            const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+        HRESULT result = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+        const HMODULE common_controls = LoadLibraryW(L"comctl32.dll");
+        if (common_controls != nullptr) {
+            const auto task_dialog =
+                reinterpret_cast<TaskDialogIndirectFunction>(GetProcAddress(
+                    common_controls, "TaskDialogIndirect"));
+            if (task_dialog != nullptr) {
+                result = task_dialog(
+                    &configuration, nullptr, nullptr, nullptr);
+            }
+            FreeLibrary(common_controls);
+        }
+        if (SUCCEEDED(result)) {
+            return;
+        }
+
+        LogError(
+            L"Showing the About task dialog failed with HRESULT " +
+            std::to_wstring(static_cast<std::uint32_t>(result)) + L'.');
+        const std::wstring fallback =
+            instruction +
+            L"\n\nWindows 任务栏 Chrome 单入口工具\n\n"
+            L"开发人员：杨云召\n\n项目地址：\n" +
+            kProjectUrl + L"\n\n许可证：MIT";
+        MessageBoxW(
+            window_,
+            fallback.c_str(),
+            L"关于 ChromeTaskbarMerger",
+            MB_OK | MB_ICONINFORMATION);
+    }
+
     void ShowContextMenu(POINT point) {
         HMENU menu = CreatePopupMenu();
         if (menu == nullptr) {
@@ -563,6 +691,8 @@ private:
         AppendMenuW(menu, MF_STRING, kMenuRestoreAll, L"恢复全部 Chrome 按钮");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuOpenLogs, L"打开日志目录");
+        AppendMenuW(menu, MF_STRING, kMenuAbout, L"关于 ChromeTaskbarMerger");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuExit, L"退出");
 
         SetForegroundWindow(window_);
@@ -608,6 +738,9 @@ private:
                 break;
             case kMenuOpenLogs:
                 OpenLogDirectory();
+                break;
+            case kMenuAbout:
+                ShowAboutDialog();
                 break;
             case kMenuExit:
                 RequestExit();
@@ -836,6 +969,8 @@ private:
     AppConfig config_;
     HWND window_ = nullptr;
     UINT taskbar_created_message_ = 0;
+    HICON large_icon_ = nullptr;
+    HICON small_icon_ = nullptr;
     bool tray_icon_added_ = false;
     bool management_enabled_ = false;
     bool recovery_required_ = false;

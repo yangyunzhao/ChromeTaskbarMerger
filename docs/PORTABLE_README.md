@@ -19,6 +19,7 @@
 - 恢复管理；
 - 恢复全部 Chrome 按钮；
 - 打开日志目录；
+- 查看“关于”、版本、开发人员和项目地址；
 - 恢复本次修改并退出。
 
 ## 配置
@@ -58,6 +59,12 @@ $process.ExitCode
 ```
 
 如果按钮仍未恢复，请在任务管理器中重启“Windows 资源管理器”，然后再次执行恢复命令并保留日志。
+
+## 开发人员与项目地址
+
+- 开发人员：杨云召
+- GitHub：[yangyunzhao/ChromeTaskbarMerger](https://github.com/yangyunzhao/ChromeTaskbarMerger)
+- 许可证：MIT
 
 ## 正常退出和卸载
 

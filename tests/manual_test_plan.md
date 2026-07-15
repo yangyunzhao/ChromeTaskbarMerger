@@ -447,6 +447,8 @@ PowerShell 退出码未被用户捕获，但日志明确记录正常退出恢复
 | TaskbarCreated 状态重建 | 忘记旧 Shell 状态并重新应用规则 | 伪控制器恢复义务清空并重新 `DeleteTab` | PASS |
 | 单实例互斥体 | 第一实例为主实例，第二实例识别已有实例 | 命名互斥体创建、检测、释放测试通过 | PASS |
 | 实例通知消息 | 同步恢复和异步扫描消息可到达首实例 | Win32 消息窗口测试均通过 | PASS |
+| 专用图标资源 | EXE 和托盘不再使用 Windows 占位图标 | SVG 源稿生成 16～256 像素共 9 个 ICO 图像；Debug/Release 资源 101 各尺寸均可加载 | PASS |
+| 关于信息 | 菜单显示版本、开发人员和可点击项目地址 | 原生 Task Dialog、Common Controls v6 清单和浏览器打开回调已构建 | PASS |
 | Release 命令回归 | `--version`、`--help`、`--list`、未知参数退出正确 | 退出码分别为 0、0、0、2 | PASS |
 | 日志失败路径 | 日志目录不可创建时不崩溃 | `LOCALAPPDATA` 指向普通文件时 `--version` 仍返回 0 | PASS |
 | Release PE | x64、Windows GUI、版本资源正确 | machine 8664、subsystem 2、`1.0.0-rc1` | PASS |
@@ -458,11 +460,13 @@ PowerShell 退出码未被用户捕获，但日志明确记录正常退出恢复
 本次待验收产物指纹：
 
 ```text
-EXE SHA-256: 14530A465832F48056EC740F19DA3D99B1EDC743D50BC42910FD09007A374C95
-ZIP SHA-256: C5B6616973041657C5A0E8EA712464866FF904AA99DBEC486FAE39EA0C117669
+EXE SHA-256: 415A890FCAC8C7D3F98FF0BB7099BFA0470D05CA0CEA25EED2B5160CB75B1403
+ZIP SHA-256: 72A049AFD78ED3526E4B64BDA1F3B50F383CB41B5343B4EF68B8948F7A54F210
 ```
 
 当前状态：`AUTOMATIC PASS / MANUAL PENDING`。
+
+2026-07-15 第一轮人工观察：无控制台、托盘图标存在、单入口收敛和 WindowTabs 可操作性均符合预期；用户认为原先的 Windows 通用占位图标过于难看。随后已改为“三个彩色窗口汇聚成一个蓝色入口”的专用图标；用户继续检查时指出托盘菜单缺少“关于”。当前包已增加关于框、开发人员“杨云召”、可点击 GitHub 地址及对应 EXE/README/许可证元数据，等待人工复核。
 
 ### 合并人工验收前置条件
 
@@ -483,6 +487,7 @@ ZIP SHA-256: C5B6616973041657C5A0E8EA712464866FF904AA99DBEC486FAE39EA0C117669
 5. 选择“暂停管理”，确认三个 Chrome 入口全部恢复；等待至少 3 秒，确认不会重新隐藏；
 6. 选择“恢复管理”，确认不超过 3 秒再次收敛为一个入口；
 7. 选择“打开日志目录”，确认资源管理器打开 `%LOCALAPPDATA%\ChromeTaskbarMerger\logs`。
+8. 选择“关于 ChromeTaskbarMerger”，确认显示 `1.0.0-rc1`、开发人员“杨云召”和 GitHub 地址；点击地址应由默认浏览器打开项目主页。
 
 #### B. 第二实例
 

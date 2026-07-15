@@ -481,7 +481,7 @@ Codex 自动验收：
 实现内容：
 
 - 系统托盘图标和状态提示；
-- 立即重新扫描、暂停管理、恢复管理、恢复全部、查看日志目录和退出；
+- 立即重新扫描、暂停管理、恢复管理、恢复全部、查看日志目录、关于和退出；
 - Explorer 重启后重新注册托盘图标；
 - Release 不显示控制台窗口；
 - 完成 README、手工测试计划、构建脚本、许可证和 `.gitignore`；
@@ -507,7 +507,7 @@ Codex 自动验收：
 
 2026-07-15 实现与自动验收进度：
 
-- 无参数 Release 已成为通知区域应用，提供状态、立即扫描、暂停、恢复管理、恢复全部、打开日志目录和退出；Release PE 为 x64 Windows GUI 子系统；
+- 无参数 Release 已成为通知区域应用，提供状态、立即扫描、暂停、恢复管理、恢复全部、打开日志目录、关于和退出；“关于”显示版本、开发人员杨云召及可点击的 GitHub 地址；应用与托盘使用专用的 9 尺寸图标资源；Release PE 为 x64 Windows GUI 子系统；
 - `ChromeTaskbarMerger.ini` 支持 500～60000 毫秒扫描间隔，缺失或无效配置安全使用 2000 毫秒默认值；扫描定时器创建失败时会恢复已跟踪按钮并暂停；
 - 已完成根 README、便携 README、MIT 许可证、`.gitignore`、版本资源、CMake 安装规则和 `scripts/build-portable.ps1`；
 - 已在全新 `build-portable` 目录完成 Debug/Release 构建及两套 4/4 CTest，并生成 `dist\ChromeTaskbarMerger` 和 `ChromeTaskbarMerger-1.0.0-rc1-portable-x64.zip`；

@@ -113,6 +113,16 @@ add_executable(
     ChromeTaskbarMerger
     src/main.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/generated/app.rc"
+    assets/ChromeTaskbarMerger.ico
+    assets/ChromeTaskbarMerger.svg
+    src/app.manifest
+)
+
+set_source_files_properties(
+    assets/ChromeTaskbarMerger.ico
+    assets/ChromeTaskbarMerger.svg
+    src/app.manifest
+    PROPERTIES HEADER_FILE_ONLY TRUE
 )
 
 target_link_libraries(
@@ -121,6 +131,13 @@ target_link_libraries(
         ctm_core
         Shell32
 )
+if(MSVC)
+    target_link_options(
+        ChromeTaskbarMerger
+        PRIVATE
+            "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/src/app.manifest"
+    )
+endif()
 set_target_properties(
     ChromeTaskbarMerger
     PROPERTIES

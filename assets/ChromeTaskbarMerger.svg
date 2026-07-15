@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="256"
+     height="256"
+     viewBox="0 0 256 256"
+     fill="none">
+  <title>ChromeTaskbarMerger</title>
+  <desc>Three colored window tiles merge into one blue taskbar entry.</desc>
+
+  <rect x="16" y="16" width="224" height="224" rx="54"
+        fill="#0F172A"/>
+  <rect x="20" y="20" width="216" height="216" rx="50"
+        stroke="#334155" stroke-width="8"/>
+
+  <path d="M64 91V108C64 128 80 144 100 144H116"
+        stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="M192 91V108C192 128 176 144 156 144H140"
+        stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="M128 91V163"
+        stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"/>
+  <path d="M116 144H140"
+        stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"/>
+
+  <rect x="40" y="42" width="48" height="52" rx="14"
+        fill="#F05252"/>
+  <rect x="104" y="42" width="48" height="52" rx="14"
+        fill="#FBBF24"/>
+  <rect x="168" y="42" width="48" height="52" rx="14"
+        fill="#34D399"/>
+
+  <rect x="78" y="157" width="100" height="63" rx="20"
+        fill="#3B82F6"/>
+  <rect x="92" y="172" width="72" height="34" rx="10"
+        fill="#EFF6FF"/>
+  <circle cx="105" cy="183" r="5" fill="#3B82F6"/>
+  <path d="M118 183H150" stroke="#93C5FD" stroke-width="8"
+        stroke-linecap="round"/>
+</svg>

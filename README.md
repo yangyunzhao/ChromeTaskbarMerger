@@ -32,7 +32,7 @@ LICENSE
 
 使用前请先启动 WindowTabs，并确保 Chrome 主窗口可通过 WindowTabs 到达和操作。双击 `ChromeTaskbarMerger.exe` 后程序没有普通主窗口或控制台，而是驻留在通知区域。再次启动 EXE 不会创建第二套管理逻辑，只会通知已有实例立即扫描。
 
-右键托盘图标可以立即扫描、暂停管理、恢复管理、恢复全部 Chrome 按钮、打开日志目录和正常退出。正常退出会先恢复本程序移除的按钮；恢复失败时程序会拒绝退出并保留恢复记录。
+右键托盘图标可以立即扫描、暂停管理、恢复管理、恢复全部 Chrome 按钮、打开日志目录、查看“关于”和正常退出。“关于”窗口显示版本、开发人员和可点击的项目地址。正常退出会先恢复本程序移除的按钮；恢复失败时程序会拒绝退出并保留恢复记录。
 
 已知兼容性影响：被合并的 Chrome 窗口可能不会出现在 Alt+Tab 中。这不阻塞当前 V1 目标，因为窗口仍可通过 WindowTabs 到达。WindowTabs 停止或无法检测时，程序会恢复已跟踪按钮并暂停管理。
 
@@ -109,6 +109,8 @@ ctest --test-dir build -C Release --output-on-failure
 
 脚本会清理仓库内的专用 `build-portable` 和 `dist` 输出，分别执行 Debug/Release 构建与 CTest，再安装四个交付文件并创建 ZIP。MSVC 运行库静态链接，因此便携包不依赖额外的 VCRUNTIME/MSVCP DLL。
 
+专用图标的矢量源稿和已生成的多尺寸 ICO 位于 `assets/`。正常构建直接使用已提交的 ICO；修改 SVG 后，可在安装了 Chrome 和 FFmpeg 的开发环境中执行 `.\scripts\build-icon.ps1` 重新生成 16～256 像素资源。
+
 当前自动结果：Debug/Release 均无编译警告，CTest 均为 4/4。测试覆盖命令行解析、窗口身份、固定入口生命周期、恢复幂等性、写前日志失败保护、损坏/截断日志整体拒绝、PID/创建时间不匹配保护、TaskbarCreated 状态重建、单实例互斥体、同步/异步实例通知、配置解析和扫描调度。
 
 ## 已完成的真实任务栏验证
@@ -122,6 +124,12 @@ ctest --test-dir build -C Release --output-on-failure
 - 暂停、恢复管理和正常退出行为正确，空闲 CPU 正常，日志无恢复遗留。
 
 Phase 5/6 中 Explorer 重启、强制结束后的持久恢复、托盘菜单和 Release 便携体验仍需要真实桌面人工确认。
+
+## 开发人员与项目地址
+
+- 开发人员：杨云召
+- GitHub：[yangyunzhao/ChromeTaskbarMerger](https://github.com/yangyunzhao/ChromeTaskbarMerger)
+- 许可证：MIT
 
 ## 正常卸载
 
