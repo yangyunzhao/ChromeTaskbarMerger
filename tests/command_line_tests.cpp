@@ -79,7 +79,7 @@ void TestManageOption() {
     constexpr std::array arguments = {std::wstring_view(L"--manage")};
     const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
     Expect(result.command == ctm::Command::Manage,
-           "--manage should select the Phase 3 management command");
+           "--manage should select the lifecycle-management command");
     Expect(result.error_message.empty(),
            "--manage should not produce an error");
 }

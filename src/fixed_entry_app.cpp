@@ -3,13 +3,17 @@
 #include "chrome_window.h"
 #include "fixed_entry_manager.h"
 #include "logger.h"
+#include "scan_schedule.h"
 #include "taskbar_controller.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
 
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cwchar>
+#include <cwctype>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -46,6 +50,67 @@ private:
     bool active_ = false;
 };
 
+class ConsoleInputModeGuard final {
+public:
+    [[nodiscard]] bool Activate(DWORD* const error_code) {
+        if (active_) {
+            return true;
+        }
+
+        input_handle_ = GetStdHandle(STD_INPUT_HANDLE);
+        if (input_handle_ == nullptr || input_handle_ == INVALID_HANDLE_VALUE) {
+            if (error_code != nullptr) {
+                *error_code = GetLastError();
+            }
+            return false;
+        }
+
+        if (GetConsoleMode(input_handle_, &original_mode_) == FALSE) {
+            if (error_code != nullptr) {
+                *error_code = GetLastError();
+            }
+            return false;
+        }
+
+        DWORD raw_mode = original_mode_;
+        raw_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT |
+                      ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT |
+                      ENABLE_QUICK_EDIT_MODE);
+        raw_mode |= ENABLE_EXTENDED_FLAGS;
+        if (SetConsoleMode(input_handle_, raw_mode) == FALSE) {
+            if (error_code != nullptr) {
+                *error_code = GetLastError();
+            }
+            return false;
+        }
+
+        active_ = true;
+        if (error_code != nullptr) {
+            *error_code = ERROR_SUCCESS;
+        }
+        return true;
+    }
+
+    ~ConsoleInputModeGuard() {
+        if (active_) {
+            SetConsoleMode(input_handle_, original_mode_);
+        }
+    }
+
+    ConsoleInputModeGuard() = default;
+    ConsoleInputModeGuard(const ConsoleInputModeGuard&) = delete;
+    ConsoleInputModeGuard& operator=(const ConsoleInputModeGuard&) = delete;
+
+    [[nodiscard]] HANDLE input_handle() const noexcept {
+        return input_handle_;
+    }
+
+private:
+    HANDLE input_handle_ = INVALID_HANDLE_VALUE;
+    DWORD original_mode_ = 0;
+    bool active_ = false;
+};
+
 class EmergencyRestoreGuard final {
 public:
     EmergencyRestoreGuard(FixedEntryManager* const manager,
@@ -62,10 +127,10 @@ public:
                 if (report.succeeded &&
                     manager_->removed_window_count() == 0) {
                     logger_->Info(
-                        L"Phase 3 scope-exit restoration completed.");
+                        L"Management scope-exit restoration completed.");
                 } else {
                     logger_->Error(
-                        L"Phase 3 scope-exit restoration did not complete.");
+                        L"Management scope-exit restoration did not complete.");
                 }
             }
         } catch (...) {
@@ -91,6 +156,12 @@ struct ProcessPresenceResult {
     bool query_succeeded = false;
     bool running = false;
     DWORD error_code = ERROR_SUCCESS;
+};
+
+struct ConsoleCommandReadResult {
+    bool succeeded = false;
+    DWORD error_code = ERROR_SUCCESS;
+    std::vector<wchar_t> commands;
 };
 
 [[nodiscard]] ProcessPresenceResult QueryWindowTabsPresence() {
@@ -121,10 +192,11 @@ struct ProcessPresenceResult {
     return result;
 }
 
-[[nodiscard]] bool RequireWindowTabs(Logger* const logger) {
+[[nodiscard]] bool RequireWindowTabs(Logger* const logger,
+                                     const bool log_success) {
     const ProcessPresenceResult presence = QueryWindowTabsPresence();
     if (presence.query_succeeded && presence.running) {
-        if (logger != nullptr) {
+        if (logger != nullptr && log_success) {
             logger->Info(L"WindowTabs.exe reachability prerequisite is running.");
         }
         return true;
@@ -143,6 +215,65 @@ struct ProcessPresenceResult {
         logger->Error(message);
     }
     return false;
+}
+
+[[nodiscard]] ConsoleCommandReadResult ReadAvailableConsoleCommands(
+    const HANDLE input_handle) {
+    ConsoleCommandReadResult result;
+    while (true) {
+        DWORD pending = 0;
+        if (GetNumberOfConsoleInputEvents(input_handle, &pending) == FALSE) {
+            result.error_code = GetLastError();
+            return result;
+        }
+        if (pending == 0) {
+            result.succeeded = true;
+            return result;
+        }
+
+        std::array<INPUT_RECORD, 32> records{};
+        DWORD read = 0;
+        constexpr DWORD record_capacity = 32;
+        static_assert(record_capacity == records.size());
+        const DWORD requested =
+            pending < record_capacity ? pending : record_capacity;
+        if (ReadConsoleInputW(
+                input_handle,
+                records.data(),
+                requested,
+                &read) == FALSE) {
+            result.error_code = GetLastError();
+            return result;
+        }
+
+        for (DWORD index = 0; index < read; ++index) {
+            const INPUT_RECORD& record = records[index];
+            if (record.EventType != KEY_EVENT ||
+                record.Event.KeyEvent.bKeyDown == FALSE) {
+                continue;
+            }
+
+            const wchar_t character = static_cast<wchar_t>(std::towlower(
+                record.Event.KeyEvent.uChar.UnicodeChar));
+            if (character == L's' || character == L'a' ||
+                character == L'r' || character == L'h' ||
+                character == L'q' || character == L'?') {
+                result.commands.push_back(character);
+            }
+        }
+    }
+}
+
+[[nodiscard]] DWORD ToWaitTimeout(
+    const std::chrono::milliseconds delay) noexcept {
+    if (delay.count() <= 0) {
+        return 0;
+    }
+    constexpr std::uint64_t maximum_timeout =
+        static_cast<std::uint64_t>(INFINITE) - 1;
+    const std::uint64_t value = static_cast<std::uint64_t>(delay.count());
+    return static_cast<DWORD>(
+        value < maximum_timeout ? value : maximum_timeout);
 }
 
 [[nodiscard]] std::wstring FormatHex(const std::uint64_t value,
@@ -221,7 +352,7 @@ void WriteReport(Logger* const logger, const std::wstring& report) {
 
 [[nodiscard]] ManageableWindowScan ScanManageableWindows(
     Logger* const logger,
-    const bool print_windows) {
+    const bool verbose) {
     ManageableWindowScan scan;
     const ChromeWindowEnumerationResult enumeration =
         EnumerateChromeWindows();
@@ -244,7 +375,7 @@ void WriteReport(Logger* const logger, const std::wstring& report) {
         }
         scan.windows.push_back(record.snapshot);
         ++manageable_index;
-        if (print_windows) {
+        if (verbose) {
             const std::wstring formatted =
                 FormatChromeWindowRecord(record, manageable_index);
             std::wcout << L"\n" << formatted << L'\n';
@@ -256,33 +387,41 @@ void WriteReport(Logger* const logger, const std::wstring& report) {
 
     scan.succeeded = true;
     const std::wstring summary =
-        L"Phase 3 scan found " +
+        L"Lifecycle scan found " +
         std::to_wstring(scan.windows.size()) +
         L" manageable Chrome window(s).";
-    std::wcout << summary << L'\n';
-    if (logger != nullptr) {
-        logger->Info(summary);
+    if (verbose) {
+        std::wcout << summary << L'\n';
+        if (logger != nullptr) {
+            logger->Info(summary);
+        }
     }
     return scan;
 }
 
 [[nodiscard]] bool SynchronizeNow(FixedEntryManager* const manager,
                                   Logger* const logger,
-                                  const HWND foreground_window) {
+                                  const HWND foreground_window,
+                                  const bool verbose) {
     const ManageableWindowScan scan =
-        ScanManageableWindows(logger, true);
+        ScanManageableWindows(logger, verbose);
     if (!scan.succeeded) {
         return false;
     }
 
     const FixedEntryReport report =
         manager->Synchronize(scan.windows, foreground_window);
-    WriteReport(
-        logger,
-        FormatReport(
-            L"Fixed-entry synchronization",
-            report,
-            manager->removed_window_count()));
+    const bool significant = !report.succeeded ||
+                             report.main_entry_changed ||
+                             !report.operations.empty();
+    if (verbose || significant) {
+        WriteReport(
+            logger,
+            FormatReport(
+                L"Fixed-entry synchronization",
+                report,
+                manager->removed_window_count()));
+    }
     return report.succeeded;
 }
 
@@ -311,26 +450,55 @@ void WriteReport(Logger* const logger, const std::wstring& report) {
 
 void PrintCommands(const bool management_enabled) {
     std::wcout
-        << L"\nCommands (management is "
-        << (management_enabled ? L"enabled" : L"paused") << L"):\n"
+        << L"\nCommands are single keys; Enter is not required. Management is "
+        << (management_enabled ? L"enabled" : L"paused") << L":\n"
         << L"  s  Scan now"
         << (management_enabled ? L" and synchronize\n"
                                : L" (read-only while paused)\n")
         << L"  a  Apply/resume management and scan now\n"
         << L"  r  Restore all entries changed by this session and pause\n"
         << L"  h  Show these commands\n"
-        << L"  q  Restore all and exit\n";
+        << L"  q  Restore all and exit\n"
+        << (management_enabled
+                ? L"Automatic lifecycle scans run every 2 seconds.\n"
+                : L"Automatic lifecycle scans are stopped while paused.\n");
+}
+
+[[nodiscard]] bool SynchronizeOrPause(
+    FixedEntryManager* const manager,
+    Logger* const logger,
+    const HWND foreground_window,
+    const bool verbose,
+    bool* const management_enabled) {
+    if (!RequireWindowTabs(logger, verbose)) {
+        static_cast<void>(RestoreWithRetry(
+            manager, logger, L"WindowTabs prerequisite restoration"));
+        *management_enabled = false;
+        return false;
+    }
+
+    const bool synchronized = SynchronizeNow(
+        manager, logger, foreground_window, verbose);
+    if (synchronized) {
+        return true;
+    }
+
+    const bool restored = RestoreWithRetry(
+        manager, logger, L"Synchronization failure restoration");
+    *management_enabled = false;
+    static_cast<void>(restored);
+    return false;
 }
 
 [[nodiscard]] int RunFixedEntryApplicationImpl(Logger* const logger) {
     const HWND startup_foreground_window = GetForegroundWindow();
     std::wcout
-        << L"=== ChromeTaskbarMerger Phase 3 fixed-entry MVP ===\n"
+        << L"=== ChromeTaskbarMerger Phase 4 lifecycle monitor ===\n"
         << L"This session uses ITaskbarList::DeleteTab/AddTab only.\n"
         << L"Phase 2 showed that removed windows may be absent from Alt+Tab; "
            L"keep WindowTabs running so they remain reachable.\n"
-        << L"This phase does not poll automatically. Use 's' after changing "
-           L"the Chrome window set.\n"
+        << L"Chrome and WindowTabs lifecycle is checked every 2 seconds "
+           L"without a busy loop.\n"
         << L"After management starts, Ctrl+C is ignored; use 'q' so every "
            L"changed entry can be restored.\n\n";
 
@@ -350,7 +518,7 @@ void PrintCommands(const bool management_enabled) {
         return 0;
     }
 
-    if (!RequireWindowTabs(logger)) {
+    if (!RequireWindowTabs(logger, true)) {
         std::wcerr
             << L"Start WindowTabs, verify the Chrome windows are reachable, "
                L"and run --manage again.\n";
@@ -382,81 +550,139 @@ void PrintCommands(const bool management_enabled) {
         return 4;
     }
 
+    ConsoleInputModeGuard input_mode_guard;
+    DWORD input_mode_error = ERROR_SUCCESS;
+    if (!input_mode_guard.Activate(&input_mode_error)) {
+        std::wcerr
+            << L"Unable to enable the non-blocking console command mode "
+               L"(Win32 error "
+            << input_mode_error << L"). No taskbar change was made.\n";
+        return 4;
+    }
+
     FixedEntryManager manager(&controller);
     EmergencyRestoreGuard emergency_restore(&manager, logger);
     bool management_enabled = true;
-    bool operation_failed =
-        !SynchronizeNow(&manager, logger, startup_foreground_window);
+    bool operation_failed = !SynchronizeOrPause(
+        &manager,
+        logger,
+        startup_foreground_window,
+        true,
+        &management_enabled);
+    ScanSchedule schedule(std::chrono::seconds(2));
+    schedule.MarkScanned(ScanSchedule::Clock::now());
     PrintCommands(management_enabled);
 
-    while (true) {
-        std::wcout << L"\nphase3> " << std::flush;
-        std::wstring command;
-        if (!std::getline(std::wcin, command)) {
-            std::wcout << L"Input ended; restoring and exiting.\n";
+    bool quit_requested = false;
+    while (!quit_requested) {
+        const ScanSchedule::TimePoint now = ScanSchedule::Clock::now();
+        if (management_enabled && schedule.IsDue(now)) {
+            const bool synchronized = SynchronizeOrPause(
+                &manager,
+                logger,
+                GetForegroundWindow(),
+                false,
+                &management_enabled);
+            operation_failed = operation_failed || !synchronized;
+            schedule.MarkScanned(ScanSchedule::Clock::now());
+            if (!management_enabled) {
+                PrintCommands(management_enabled);
+            }
+            continue;
+        }
+
+        const DWORD timeout = management_enabled
+                                  ? ToWaitTimeout(schedule.DelayUntilDue(now))
+                                  : INFINITE;
+        const DWORD wait_result =
+            WaitForSingleObject(input_mode_guard.input_handle(), timeout);
+        if (wait_result == WAIT_TIMEOUT) {
+            continue;
+        }
+        if (wait_result != WAIT_OBJECT_0) {
+            const DWORD error_code = wait_result == WAIT_FAILED
+                                         ? GetLastError()
+                                         : ERROR_GEN_FAILURE;
+            const std::wstring message =
+                L"Waiting for console input failed with Win32 error " +
+                std::to_wstring(error_code) + L'.';
+            std::wcerr << message << L'\n';
+            if (logger != nullptr) {
+                logger->Error(message);
+            }
+            operation_failed = true;
             break;
         }
 
-        if (command == L"q" || command == L"Q") {
+        const ConsoleCommandReadResult input =
+            ReadAvailableConsoleCommands(input_mode_guard.input_handle());
+        if (!input.succeeded) {
+            const std::wstring message =
+                L"Reading console commands failed with Win32 error " +
+                std::to_wstring(input.error_code) + L'.';
+            std::wcerr << message << L'\n';
+            if (logger != nullptr) {
+                logger->Error(message);
+            }
+            operation_failed = true;
             break;
         }
-        if (command == L"h" || command == L"H" || command == L"?") {
-            PrintCommands(management_enabled);
-            continue;
-        }
-        if (command == L"r" || command == L"R") {
-            const bool restored = RestoreWithRetry(
-                &manager, logger, L"Restore all and pause");
-            management_enabled = false;
-            operation_failed = operation_failed || !restored;
-            PrintCommands(management_enabled);
-            continue;
-        }
-        if (command == L"a" || command == L"A") {
-            if (!RequireWindowTabs(logger)) {
+
+        for (const wchar_t command : input.commands) {
+            std::wcout << L"\nphase4> " << command << L'\n';
+            if (command == L'q') {
+                quit_requested = true;
+                break;
+            }
+            if (command == L'h' || command == L'?') {
+                PrintCommands(management_enabled);
+                continue;
+            }
+            if (command == L'r') {
                 const bool restored = RestoreWithRetry(
+                    &manager, logger, L"Restore all and pause");
+                management_enabled = false;
+                operation_failed = operation_failed || !restored;
+                PrintCommands(management_enabled);
+                continue;
+            }
+            if (command == L'a') {
+                management_enabled = true;
+                const bool synchronized = SynchronizeOrPause(
                     &manager,
                     logger,
-                    L"WindowTabs prerequisite restoration");
-                management_enabled = false;
-                operation_failed = true;
-                static_cast<void>(restored);
-            } else {
-                management_enabled = true;
-                const bool synchronized =
-                    SynchronizeNow(&manager, logger, GetForegroundWindow());
+                    GetForegroundWindow(),
+                    true,
+                    &management_enabled);
                 operation_failed = operation_failed || !synchronized;
+                schedule.MarkScanned(ScanSchedule::Clock::now());
+                PrintCommands(management_enabled);
+                continue;
             }
-            PrintCommands(management_enabled);
-            continue;
-        }
-        if (command == L"s" || command == L"S") {
-            if (management_enabled) {
-                if (!RequireWindowTabs(logger)) {
-                    const bool restored = RestoreWithRetry(
+            if (command == L's') {
+                if (management_enabled) {
+                    const bool synchronized = SynchronizeOrPause(
                         &manager,
                         logger,
-                        L"WindowTabs prerequisite restoration");
-                    management_enabled = false;
-                    operation_failed = true;
-                    static_cast<void>(restored);
-                    PrintCommands(management_enabled);
-                } else {
-                    const bool synchronized = SynchronizeNow(
-                        &manager, logger, GetForegroundWindow());
+                        GetForegroundWindow(),
+                        true,
+                        &management_enabled);
                     operation_failed = operation_failed || !synchronized;
+                    schedule.MarkScanned(ScanSchedule::Clock::now());
+                } else {
+                    const ManageableWindowScan scan =
+                        ScanManageableWindows(logger, true);
+                    operation_failed = operation_failed || !scan.succeeded;
+                    std::wcout
+                        << L"Management remains paused; press 'a' to apply "
+                           L"the fixed-entry rule.\n";
                 }
-            } else {
-                const ManageableWindowScan scan =
-                    ScanManageableWindows(logger, true);
-                operation_failed = operation_failed || !scan.succeeded;
-                std::wcout << L"Management remains paused; enter 'a' to "
-                              L"apply the fixed-entry rule.\n";
+                if (!management_enabled) {
+                    PrintCommands(management_enabled);
+                }
+                continue;
             }
-            continue;
         }
-
-        std::wcout << L"Unknown command. Enter h for help.\n";
     }
 
     const bool restored =
@@ -481,19 +707,19 @@ int RunFixedEntryApplication(Logger* const logger) {
     } catch (const std::exception& exception) {
         if (logger != nullptr) {
             logger->Error(
-                std::string("Unhandled Phase 3 exception: ") +
+                std::string("Unhandled lifecycle-monitor exception: ") +
                 exception.what());
         }
         std::wcerr
-            << L"The Phase 3 session stopped after an unexpected exception; "
+            << L"The lifecycle monitor stopped after an unexpected exception; "
                L"scope-exit restoration was attempted.\n";
         return 6;
     } catch (...) {
         if (logger != nullptr) {
-            logger->Error(L"Unhandled unknown Phase 3 exception.");
+            logger->Error(L"Unhandled unknown lifecycle-monitor exception.");
         }
         std::wcerr
-            << L"The Phase 3 session stopped after an unknown exception; "
+            << L"The lifecycle monitor stopped after an unknown exception; "
                L"scope-exit restoration was attempted.\n";
         return 6;
     }

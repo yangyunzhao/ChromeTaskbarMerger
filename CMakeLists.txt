@@ -54,6 +54,8 @@ add_library(
         src/fixed_entry_manager.h
         src/logger.cpp
         src/logger.h
+        src/scan_schedule.cpp
+        src/scan_schedule.h
         src/taskbar_controller.cpp
         src/taskbar_controller.h
         src/taskbar_experiment.cpp

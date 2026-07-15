@@ -31,3 +31,20 @@ add_test(
     NAME fixed_entry
     COMMAND ChromeTaskbarMergerFixedEntryTests
 )
+
+add_executable(
+    ChromeTaskbarMergerScanScheduleTests
+    scan_schedule_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerScanScheduleTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerScanScheduleTests)
+
+add_test(
+    NAME scan_schedule
+    COMMAND ChromeTaskbarMergerScanScheduleTests
+)

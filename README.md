@@ -4,17 +4,17 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0～Phase 3** 均已完成验收。Phase 3 已在 1、3、5 个真实 Chrome 窗口上确认固定单入口、重复同步幂等、恢复全部、重新应用和正常退出恢复；Phase 4 已获准但尚未开始。
+**Phase 0～Phase 3** 均已完成验收。Phase 4 的生命周期监控实现和自动验收已经完成，正在等待真实任务栏人工验收；Phase 5 尚未开始。
 
 当前提供：
 
 - CMake C++20 工程；
 - `--help`、`--version`、只读的 `--list`、交互式 `--experiment`，以及固定入口 `--manage` 命令行入口；
 - `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log` 基础日志；
-- 无第三方测试框架的命令行、窗口识别和任务栏恢复规则测试；
+- 无第三方测试框架的命令行、窗口识别、任务栏恢复规则和扫描调度测试；
 - Debug 控制台程序和 Release Windows 子系统程序。
 
-`--list` 和无参数启动保持只读。`--experiment` 只有在用户输入精确的 `APPLY` 后才临时修改一个窗口并立即恢复；`--manage` 只有在用户输入精确的 `MANAGE` 后才启动固定入口会话，并在恢复全部或正常退出时恢复本会话跟踪的修改。
+`--list` 和无参数启动保持只读。`--experiment` 只有在用户输入精确的 `APPLY` 后才临时修改一个窗口并立即恢复；`--manage` 只有在用户输入精确的 `MANAGE` 后才启动固定入口生命周期监控，并在暂停或正常退出时恢复本会话跟踪的修改。
 
 完整开发计划见 [CODEX_TASK_Chrome_Taskbar_Merger_CPP.md](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)。
 
@@ -97,7 +97,7 @@ Phase 2 于 2026-07-15 在 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、W
 
 后续实现固定采用方法 A。Alt+Tab 缺项是已知兼容性代价，但不阻塞当前 V1 目标；方法 B 只保留为实验诊断路径，不作为自动回退。自动验收使用 CMake 4.3.0、Visual Studio 18 2026 Community、MSVC 19.51.36246 和 Windows SDK 10.0.26100.0；Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过。
 
-## Phase 3：固定主入口会话
+## Phase 4：固定主入口生命周期监控
 
 请使用 Debug 控制台版本：
 
@@ -105,7 +105,9 @@ Phase 2 于 2026-07-15 在 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、W
 .\build\Debug\ChromeTaskbarMerger.exe --manage
 ```
 
-程序先只读列出可管理窗口；只有输入精确的 `MANAGE` 才会应用规则。首次同步优先保留启动时的前台 Chrome，否则保留最低 HWND 对应的稳定入口。只要该窗口身份仍有效，切换 WindowTabs、Alt+Tab、鼠标或其他前台程序都不会更换入口。
+程序先只读列出可管理窗口；只有输入精确的 `MANAGE` 才会应用规则。首次同步优先保留启动时的前台 Chrome，否则保留最低 HWND 对应的稳定入口。只要该窗口身份仍有效，切换 WindowTabs、Alt+Tab、鼠标或其他前台程序都不会更换入口。开始后每 2 秒自动扫描一次 Chrome 生命周期；控制台以阻塞方式等待扫描截止时间或命令，不使用忙循环。
+
+以下命令均为单键操作，**无需按 Enter**：
 
 | 命令 | 行为 |
 | --- | --- |
@@ -115,13 +117,15 @@ Phase 2 于 2026-07-15 在 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、W
 | `h` | 显示命令帮助 |
 | `q` | 恢复全部并正常退出 |
 
-Phase 2 表明被移除的 Chrome 不会出现在 Alt+Tab 中，因此 `--manage` 要求 `WindowTabs.exe` 正在运行。每次同步前都会检查；若 WindowTabs 不可用，将停止新增移除、恢复已跟踪按钮并暂停。Phase 3 不做后台轮询，Chrome 窗口数量变化后需要手动输入 `s`；自动维护属于 Phase 4。
+Phase 2 表明被移除的 Chrome 不会出现在 Alt+Tab 中，因此 `--manage` 要求 `WindowTabs.exe` 正在运行。每次自动或手动同步前都会检查；若 WindowTabs 不可用，将停止新增移除、恢复已跟踪按钮并暂停。重新启动 WindowTabs 后按 `a` 可恢复管理。
 
 开始管理后 Ctrl+C 被忽略，请使用 `q` 正常退出。正常退出、`r` 和异常作用域退出只恢复本会话中 `DeleteTab` 成功的窗口，并在失败时重试一次。若出现恢复警告或退出码 `5`，不要再次启动管理，保留日志并通过任务管理器重启 Windows 资源管理器。
 
-Debug/Release 构建无警告，Debug/Release CTest 均为 2/2 通过。自动测试使用伪任务栏控制器覆盖 0、1、3、5 窗口、固定主入口、重复同步、恢复后重用、失败重试和 HWND 身份变化。
+Debug/Release 构建无警告，Debug/Release CTest 均为 3/3 通过。自动测试使用伪任务栏控制器和可控时钟覆盖 0、1、3、5 窗口、运行中新建窗口、关闭非主/主窗口、全部关闭后重开、固定主入口、重复同步、暂停后重用、失败重试、HWND 身份变化、2 秒扫描间隔和去抖。
 
 2026-07-15 真实任务栏验收通过：一窗口无需移除；三窗口恰好移除/恢复两个非主入口，并验证 `r` 后恢复、`a` 后重新应用；五窗口恰好移除/恢复四个非主入口。三轮重复扫描均保持固定主入口 `HWND=0x0000000000020332`，没有重复 API 调用。日志合计为 7 次成功同步、8 次成功 `DeleteTab`、8 次成功 `AddTab`、4 次成功恢复流程，错误和警告均为 0。用户确认管理期间任务栏只剩一个入口、全部 Chrome 仍可由 WindowTabs 操作，恢复和退出后所有入口重新出现。完整证据与回归步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。
+
+上述真实任务栏证据属于 Phase 3。Phase 4 的代码与自动验收已通过，动态新建/关闭/重开、暂停恢复和空闲 CPU 的人工验收仍待执行。
 
 ## Phase 0 验收记录
 

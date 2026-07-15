@@ -26,7 +26,7 @@ void PrintHelp() {
         << L"  --version       Show the application version.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
-        << L"  --manage        Run the Phase 3 fixed-entry console session.\n\n"
+        << L"  --manage        Run the Phase 4 lifecycle monitor.\n\n"
         << L"--list is read-only. Mutating commands require an explicit "
            L"confirmation and restore their tracked changes on normal exit.\n";
 }
@@ -100,7 +100,7 @@ int RunApplication(const std::span<const std::wstring_view> arguments) {
         case ctm::Command::Run:
             std::wcout << ctm::kApplicationName << L" " << ctm::kVersion
                        << L"\nDiagnostics are ready. No taskbar changes were made.\n"
-                       << L"Use --manage to start the explicit Phase 3 session.\n";
+                       << L"Use --manage to start the Phase 4 lifecycle monitor.\n";
             if (logging_available) {
                 std::wcout << L"Log: " << logger.log_path().wstring() << L'\n';
                 logger.Info("Read-only startup completed; no taskbar APIs were invoked.");

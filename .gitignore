@@ -44,6 +44,7 @@ logs/
 /result.txt
 /phase2-*.txt
 /phase3-*.txt
+/phase4-*.txt
 
 # Local editor and operating-system files
 .idea/

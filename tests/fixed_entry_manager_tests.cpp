@@ -285,6 +285,103 @@ void TestFiveWindowsRemoveExactlyFourEntries() {
     static_cast<void>(manager.RestoreAll());
 }
 
+void TestNewWindowsAreAddedWithoutChangingTheFixedEntry() {
+    FakeTaskbarController controller;
+    ctm::FixedEntryManager manager(&controller);
+    const std::vector initial = {MakeWindow(1)};
+    static_cast<void>(manager.Synchronize(initial, TestHandle(1)));
+
+    const std::vector expanded = {
+        MakeWindow(1),
+        MakeWindow(2),
+        MakeWindow(3),
+    };
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(expanded, TestHandle(3));
+    Expect(report.succeeded,
+           "new windows should be incorporated successfully");
+    Expect(manager.main_entry().has_value() &&
+               HandleValue(manager.main_entry()->hwnd) == 1,
+           "new foreground windows should not replace the fixed entry");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove, 2) == 1 &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove, 3) == 1,
+           "each new non-main window should receive one removal");
+    Expect(manager.removed_window_count() == 2,
+           "both new non-main windows should remain tracked");
+
+    static_cast<void>(manager.Synchronize(expanded, TestHandle(2)));
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 2,
+           "a repeated lifecycle scan should not remove new windows twice");
+    static_cast<void>(manager.RestoreAll());
+}
+
+void TestClosedNonMainWindowIsReconciledWithoutExtraRemoval() {
+    FakeTaskbarController controller;
+    ctm::FixedEntryManager manager(&controller);
+    const std::vector initial = {
+        MakeWindow(1),
+        MakeWindow(2),
+        MakeWindow(3),
+    };
+    static_cast<void>(manager.Synchronize(initial, TestHandle(1)));
+
+    const std::vector remaining = {
+        MakeWindow(1),
+        MakeWindow(3),
+    };
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(remaining, TestHandle(3));
+    Expect(report.succeeded,
+           "closing a non-main window should reconcile successfully");
+    Expect(manager.main_entry().has_value() &&
+               HandleValue(manager.main_entry()->hwnd) == 1,
+           "closing a non-main window should preserve the fixed entry");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Restore, 2) == 1,
+           "the closed non-main identity should be resolved once");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 2,
+           "closing a non-main window should not cause extra removals");
+    Expect(manager.removed_window_count() == 1,
+           "the remaining non-main window should stay tracked");
+
+    static_cast<void>(manager.Synchronize(remaining, TestHandle(3)));
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Restore, 2) == 1,
+           "a resolved closed identity should not be restored twice");
+    static_cast<void>(manager.RestoreAll());
+}
+
+void TestAllWindowsCanCloseAndReopenWithNewIdentities() {
+    FakeTaskbarController controller;
+    ctm::FixedEntryManager manager(&controller);
+    const std::vector initial = {
+        MakeWindow(1),
+        MakeWindow(2),
+        MakeWindow(3),
+    };
+    static_cast<void>(manager.Synchronize(initial, TestHandle(1)));
+
+    const std::vector<ctm::ChromeWindowSnapshot> empty;
+    static_cast<void>(manager.Synchronize(empty, nullptr));
+
+    const std::vector reopened = {
+        MakeWindow(40, 400),
+        MakeWindow(50, 500),
+        MakeWindow(60, 600),
+    };
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(reopened, TestHandle(50));
+    Expect(report.succeeded,
+           "new identities should synchronize after every Chrome window closes");
+    Expect(manager.main_entry().has_value() &&
+               HandleValue(manager.main_entry()->hwnd) == 50,
+           "the foreground reopened window should become the new fixed entry");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove, 40) == 1 &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove, 60) == 1,
+           "reopened non-main windows should each receive one removal");
+    Expect(manager.removed_window_count() == 2,
+           "only the reopened non-main identities should be tracked");
+    static_cast<void>(manager.RestoreAll());
+}
+
 void TestOnlySuccessfulRemovalsAreRestored() {
     FakeTaskbarController controller;
     controller.FailNextRemovals(2, 1);
@@ -440,6 +537,9 @@ int main() {
     TestThreeWindowsKeepTheForegroundEntryFixed();
     TestNonChromeForegroundUsesStableHandleOrder();
     TestFiveWindowsRemoveExactlyFourEntries();
+    TestNewWindowsAreAddedWithoutChangingTheFixedEntry();
+    TestClosedNonMainWindowIsReconciledWithoutExtraRemoval();
+    TestAllWindowsCanCloseAndReopenWithNewIdentities();
     TestOnlySuccessfulRemovalsAreRestored();
     TestClosedMainPromotesAndRestoresTheForegroundWindow();
     TestReusedHandleRestoresOldIdentityBeforeRemovingNewIdentity();
