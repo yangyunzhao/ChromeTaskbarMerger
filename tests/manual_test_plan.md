@@ -464,7 +464,7 @@ EXE SHA-256: 415A890FCAC8C7D3F98FF0BB7099BFA0470D05CA0CEA25EED2B5160CB75B1403
 ZIP SHA-256: 72A049AFD78ED3526E4B64BDA1F3B50F383CB41B5343B4EF68B8948F7A54F210
 ```
 
-当前状态：`AUTOMATIC PASS / MANUAL PENDING`。
+当前状态：`PASS`。用户随后依次完成 A～E 及恢复检查，确认托盘、专用图标、关于窗口、第二实例、Explorer 重建、异常恢复、显式恢复、正常退出和便携说明均符合预期；CPU 正常且全部 Chrome 按钮可恢复。该产物随后发布为 GitHub 预发行版 `v1.0.0-rc1`。
 
 2026-07-15 第一轮人工观察：无控制台、托盘图标存在、单入口收敛和 WindowTabs 可操作性均符合预期；用户认为原先的 Windows 通用占位图标过于难看。随后已改为“三个彩色窗口汇聚成一个蓝色入口”的专用图标；用户继续检查时指出托盘菜单缺少“关于”。当前包已增加关于框、开发人员“杨云召”、可点击 GitHub 地址及对应 EXE/README/许可证元数据，等待人工复核。
 
@@ -558,5 +558,66 @@ Copy-Item `
 | Phase 2 | 任务栏按钮是否真实移除和恢复 | PASS：采用方法 A |
 | Phase 3 | 多窗口时是否只保留一个入口 | PASS |
 | Phase 4 | 新建、关闭窗口后的自动同步 | PASS |
-| Phase 5 | Explorer 重启、异常恢复和单实例 | AUTOMATIC PASS / MANUAL PENDING |
-| Phase 6 | 托盘菜单和 Release 便携体验 | AUTOMATIC PASS / MANUAL PENDING |
+| Phase 5 | Explorer 重启、异常恢复和单实例 | PASS |
+| Phase 6 | 托盘菜单和 Release 便携体验 | PASS |
+
+## Phase 7：随 Windows 登录自动启动（rc2）
+
+2026-07-16 用户确认采用以下设计：INI 保存期望状态，托盘同步更新配置和当前用户 `Run` 注册项；直接修改文件只在完全退出并重新运行后生效；自动登录启动时非阻塞等待 WindowTabs。
+
+### 自动验收项目
+
+| 项目 | 预期结果 | 当前结果 | 状态 |
+| --- | --- | --- | --- |
+| 配置读取 | `start_with_windows` 默认关闭，支持大小写不敏感的 `true/false`，非法值安全关闭 | 缺失、合法大小写和非法值测试全部通过 | PASS |
+| 配置保存 | 原子替换，保留注释、扫描间隔和其他节，清理重复键 | 临时 Unicode 路径保存、重载、去重和临时文件清理通过 | PASS |
+| 注册生命周期 | 测试专用 HKCU 子键完成创建、查询、幂等、移动路径修复和删除 | 独立测试通过；结束后临时键为 0，真实 `Run` 值未改变 | PASS |
+| 命令安全 | 空格/中文路径正确加引号，超过 260 字符拒绝启用 | 引号和长度边界测试通过 | PASS |
+| 实际 EXE 关闭分支 | 默认 `false` 时 `--autostart` 不启动托盘、不管理 Chrome、不建立启动项 | rc2 EXE 返回 0，无残留进程，真实 `Run` 值仍不存在 | PASS |
+| 启动等待 | 每 3 秒重试，120 秒超时，可停止且不真实等待 | 可控时钟测试通过 | PASS |
+| Debug/Release | 两种配置无警告构建，CTest 全通过 | 全新 `build-portable` 两种配置均构建成功、5/5 通过 | PASS |
+| 便携产物 | rc2 EXE/INI/README/LICENSE 与 ZIP 完整，静态运行库 | 四个文件齐全；x64 GUI；无 VCRUNTIME/MSVCP 依赖 | PASS |
+
+### 人工登录验收
+
+前置条件：WindowTabs 已配置为随 Windows 登录启动；准备 3 个可安全关闭的普通 Chrome 窗口。测试期间如任务栏按钮未恢复，先从托盘选择“恢复全部 Chrome 按钮”，必要时重启 Windows 资源管理器。
+
+#### A. 托盘启用和持久化
+
+1. 启动 rc2 便携版，右键托盘图标；
+2. 勾选“随 Windows 登录自动启动”；
+3. 再次打开菜单，确认项目保持勾选；
+4. 打开 EXE 同目录的 INI，确认 `start_with_windows=true`；
+5. 打开任务管理器“启动应用”，确认出现 ChromeTaskbarMerger。Windows 可能显示其系统级启用状态；若在这里手工禁用，以 Windows 设置为准。
+
+#### B. 正常登录启动
+
+1. 保持自动启动已勾选，退出并重新登录 Windows；
+2. 确认通知区域自动出现 ChromeTaskbarMerger；
+3. WindowTabs 就绪后，确认托盘状态为“管理中”；
+4. 打开或保留 3 个 Chrome 窗口，等待一个扫描周期后确认任务栏只有一个 Chrome 入口，全部窗口仍可由 WindowTabs 到达。
+
+#### C. WindowTabs 延迟启动
+
+1. 临时关闭 WindowTabs 的自动启动，保留 ChromeTaskbarMerger 自动启动；
+2. 重新登录 Windows，确认托盘提示或状态为“等待 WindowTabs”，此时不得移除 Chrome 按钮；
+3. 在 120 秒内手动启动 WindowTabs；
+4. 确认程序自动变为“管理中”，并收敛到一个 Chrome 任务栏入口；
+5. 测试后恢复 WindowTabs 原来的自动启动设置。
+
+#### D. 关闭和直接编辑
+
+1. 从托盘取消勾选自动启动，确认 INI 变为 `false`；
+2. 重新登录 Windows，确认 ChromeTaskbarMerger 不再自动出现；
+3. 手工将 INI 改为 `true`，手动启动程序一次，确认菜单勾选并建立启动项；
+4. 手工改回 `false`，从托盘彻底退出后重新启动，确认菜单不勾选且启动项已删除；
+5. 最后按自己的使用偏好设置，并报告 A～D 是否全部符合预期。
+
+本次候选产物指纹：
+
+```text
+EXE SHA-256: 24073B8606648A57ACB9FD92478EA1DC4B63BC1AB673676989C237D7C37387CE
+ZIP SHA-256: E90F73DAA027763BDC16CCA6F15A593DC6ED6E02EFCBC61AB87D9C97F23197B2
+```
+
+当前状态：`AUTOMATIC PASS / MANUAL LOGIN PENDING`。

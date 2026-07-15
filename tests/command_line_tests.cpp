@@ -58,6 +58,15 @@ void TestVersionOption() {
            "--version should not produce an error");
 }
 
+void TestAutoStartOption() {
+    constexpr std::array arguments = {std::wstring_view(L"--autostart")};
+    const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
+    Expect(result.command == ctm::Command::AutoStart,
+           "--autostart should select the Windows-login launch command");
+    Expect(result.error_message.empty(),
+           "--autostart should not produce an error");
+}
+
 void TestListOption() {
     constexpr std::array arguments = {std::wstring_view(L"--list")};
     const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
@@ -583,6 +592,7 @@ int main() {
     TestEmptyArgumentsRunTheApplication();
     TestHelpAliases();
     TestVersionOption();
+    TestAutoStartOption();
     TestListOption();
     TestExperimentOption();
     TestManageOption();

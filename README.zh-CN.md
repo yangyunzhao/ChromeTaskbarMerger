@@ -16,7 +16,7 @@
   <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="状态" src="https://img.shields.io/badge/status-1.0.0--rc1-orange">
+  <img alt="状态" src="https://img.shields.io/badge/status-1.0.0--rc2-orange">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -38,6 +38,7 @@ ChromeTaskbarMerger 是一个轻量级 Windows 原生工具，面向同时使用
 - Windows 资源管理器重启后重新注册托盘图标并应用规则。
 - 确保同一时间只有一套管理实例运行。
 - 支持可配置的低频扫描，不使用忙循环。
+- 支持当前用户登录 Windows 时自动启动，可从托盘或便携 INI 配置。
 - 每次移除任务栏按钮前先写入恢复意图。
 - 恢复前验证 HWND、PID、TID、进程创建时间和窗口类。
 - 提供独立的 `--restore-all` 恢复命令。
@@ -86,6 +87,7 @@ cd ChromeTaskbarMerger
 | 暂停管理 | 恢复已跟踪的 Chrome 按钮并停止自动扫描。 |
 | 恢复管理 | 重新检查前置条件并应用单入口规则。 |
 | 恢复全部 Chrome 按钮 | 对已跟踪和当前可识别的 Chrome 窗口执行安全恢复，随后保持暂停。 |
+| 随 Windows 登录自动启动 | 原子更新便携配置和当前用户的 Windows 启动注册项。 |
 | 打开日志目录 | 打开当前用户的日志目录。 |
 | 关于 ChromeTaskbarMerger | 显示版本、开发人员、许可证和可点击的 GitHub 项目链接。 |
 | 退出 | 恢复已跟踪按钮后退出；无法确认恢复时拒绝退出。 |
@@ -97,9 +99,15 @@ cd ChromeTaskbarMerger
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+start_with_windows=false
 ```
 
-允许范围为 500～60000 毫秒，重启程序后生效。配置缺失、不可读或数值无效时，程序安全使用 2000 毫秒默认值并记录警告。
+`scan_interval_ms` 允许范围为 500～60000 毫秒；`start_with_windows` 接受
+`true` 或 `false`，默认关闭。
+
+通过托盘修改会立即生效并保存 INI。直接编辑文件只在进程启动时读取：必须从托盘彻底退出后重新运行。已有实例运行时再次双击 EXE 只会请求重新扫描，不算重启。手工将 `false` 改为 `true` 后，需要手动重新运行一次，程序才能创建当前用户的 Windows `Run` 启动项。
+
+这里的自动启动是“当前用户登录后启动”，不是系统服务，无需管理员权限。如果 WindowTabs 尚未启动，程序会在托盘中等待并重试，最长 120 秒，超时后保持暂停。移动便携目录后，需要从新位置手动运行一次以修复注册的 EXE 路径。
 
 ## 日志和异常恢复
 
@@ -132,6 +140,7 @@ $process.ExitCode
 ```text
 ChromeTaskbarMerger.exe --help
 ChromeTaskbarMerger.exe --version
+ChromeTaskbarMerger.exe --autostart
 ChromeTaskbarMerger.exe --list
 ChromeTaskbarMerger.exe --experiment
 ChromeTaskbarMerger.exe --manage
@@ -142,6 +151,7 @@ ChromeTaskbarMerger.exe --restore-all
 - `--experiment` 保留 Phase 2 的交互式任务栏方法诊断。
 - `--manage` 启动诊断用控制台生命周期监控。
 - `--restore-all` 恢复有效记录及当前可识别 Chrome 的任务栏注册。
+- `--autostart` 是 Windows 登录启动项使用的内部标记；如果 INI 已关闭自动启动，陈旧调用会删除注册项后退出。
 - 未知参数返回退出码 `2`。
 
 Release 是 Windows GUI 子系统程序。脚本需要等待完成或读取退出码时，请使用 `Start-Process -Wait -PassThru`。
@@ -172,7 +182,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## 验证状态
 
-版本 `1.0.0-rc1` 当前在 Debug 和 Release 配置下均通过全新构建和 4/4 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置解析和扫描调度。
+版本 `1.0.0-rc2` 在 Debug 和 Release 配置下均通过全新构建和 5/5 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复和启动等待调度。
 
 真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、正常退出恢复和空闲 CPU。Explorer 重启、强制结束恢复及最终便携托盘体验仍属于发布候选验收项目。
 
@@ -187,7 +197,8 @@ ctest --test-dir build -C Release --output-on-failure
 - 因此 WindowTabs 是启用管理的运行前置条件。
 - 任务栏入口保持固定，不会跟随当前活动 Chrome 窗口。
 - Windows 10、其他 Chromium 浏览器、多虚拟桌面及所有多显示器/DPI 组合尚未完成发布验证。
-- 当前发布候选不包含开机自动启动。
+- Windows 设置或任务管理器可以禁用已注册的启动应用；系统层面的选择优先于 INI 设置。
+- 登录启动最多等待 WindowTabs 120 秒，随后保持暂停；超时后请启动 WindowTabs 并选择“恢复管理”。
 
 ## 项目结构
 
@@ -202,9 +213,10 @@ tests/    自动测试和人工验收记录
 
 ## 卸载
 
-1. 从托盘菜单选择“退出”，确认所有 Chrome 按钮恢复。
-2. 删除便携程序目录。
-3. 确认不再需要日志和恢复记录后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
+1. 在托盘菜单中取消勾选“随 Windows 登录自动启动”。
+2. 选择“退出”，确认所有 Chrome 按钮恢复。
+3. 删除便携程序目录。
+4. 确认不再需要日志和恢复记录后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
 
 ## 开发人员
 

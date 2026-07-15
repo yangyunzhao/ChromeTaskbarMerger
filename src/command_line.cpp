@@ -24,6 +24,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::ShowVersion};
     }
 
+    if (option == L"--autostart") {
+        return {.command = Command::AutoStart};
+    }
+
     if (option == L"--list") {
         return {.command = Command::ListWindows};
     }

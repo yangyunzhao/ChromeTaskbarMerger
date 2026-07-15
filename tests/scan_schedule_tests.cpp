@@ -1,4 +1,5 @@
 #include "scan_schedule.h"
+#include "startup_wait.h"
 
 #include <chrono>
 #include <cstdint>
@@ -73,6 +74,35 @@ void TestInvalidIntervalIsClamped() {
            "a non-positive interval should be clamped to one millisecond");
 }
 
+void TestStartupWaitRetriesAndTimesOutWithoutSleeping() {
+    ctm::StartupWaitSchedule wait(
+        std::chrono::seconds(3), std::chrono::seconds(12));
+    Expect(!wait.active(), "a startup wait should initially be inactive");
+
+    wait.Start(AtMilliseconds(1000));
+    Expect(wait.active(), "starting should activate the prerequisite wait");
+    Expect(!wait.IsAttemptDue(AtMilliseconds(3999)),
+           "the first prerequisite retry should respect its interval");
+    Expect(wait.IsAttemptDue(AtMilliseconds(4000)),
+           "the first prerequisite retry should become due after three seconds");
+
+    wait.MarkAttempted(AtMilliseconds(4000));
+    Expect(!wait.IsAttemptDue(AtMilliseconds(6999)),
+           "marking an attempt should schedule the next retry");
+    Expect(wait.IsAttemptDue(AtMilliseconds(7000)),
+           "a subsequent retry should use the same interval");
+    Expect(!wait.HasTimedOut(AtMilliseconds(12999)),
+           "the wait should remain active before its deadline");
+    Expect(wait.HasTimedOut(AtMilliseconds(13000)),
+           "the wait should time out at the configured deadline");
+    Expect(!wait.IsAttemptDue(AtMilliseconds(13000)),
+           "no retry should be due once the timeout is reached");
+
+    wait.Stop();
+    Expect(!wait.active() && !wait.HasTimedOut(AtMilliseconds(20000)),
+           "stopping should clear the wait state");
+}
+
 }  // namespace
 
 int main() {
@@ -81,6 +111,7 @@ int main() {
     TestImmediateRequestsAreCoalesced();
     TestManualScanDebouncesTheNextPeriodicScan();
     TestInvalidIntervalIsClamped();
+    TestStartupWaitRetriesAndTimesOutWithoutSleeping();
 
     if (failures != 0) {
         std::cerr << failures << " scan-schedule test(s) failed.\n";

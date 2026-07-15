@@ -31,13 +31,14 @@ void PrintHelp() {
         << L"Options:\n"
         << L"  --help, -h, /?  Show this help text.\n"
         << L"  --version       Show the application version.\n"
+        << L"  --autostart     Internal Windows-login startup entry.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
         << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
         << L"  --restore-all   Explicitly restore all identifiable Chrome buttons.\n\n"
         << L"With no option, start the V1 notification-area application.\n"
         << L"ChromeTaskbarMerger.ini beside the executable controls the scan "
-           L"interval.\n";
+           L"interval and Windows-login startup.\n";
 }
 
 int ListChromeWindows(ctm::Logger* const logger) {
@@ -115,10 +116,14 @@ int ListChromeWindows(ctm::Logger* const logger) {
 
 [[nodiscard]] ctm::AppConfigLoadResult LoadConfiguration(
     ctm::Logger* const logger,
-    const bool show_warnings) {
+    const bool show_warnings,
+    std::filesystem::path* const configuration_path) {
     std::wstring path_error;
     const std::filesystem::path path =
         ctm::GetConfigurationPath(&path_error);
+    if (configuration_path != nullptr) {
+        *configuration_path = path;
+    }
     ctm::AppConfigLoadResult result;
     if (path.empty()) {
         result.read_succeeded = false;
@@ -137,7 +142,9 @@ int ListChromeWindows(ctm::Logger* const logger) {
     if (logger != nullptr) {
         logger->Info(
             L"Configuration scan_interval_ms=" +
-            std::to_wstring(result.config.scan_interval.count()) + L'.');
+            std::to_wstring(result.config.scan_interval.count()) +
+            L"; start_with_windows=" +
+            (result.config.start_with_windows ? L"true" : L"false") + L'.');
     }
     return result;
 }
@@ -191,8 +198,9 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
         logging_available ? &logger : nullptr;
 
     const ctm::CommandLineOptions options = ctm::ParseCommandLine(arguments);
-    const ctm::AppConfigLoadResult config =
-        LoadConfiguration(active_logger, !arguments.empty());
+    std::filesystem::path configuration_path;
+    const ctm::AppConfigLoadResult config = LoadConfiguration(
+        active_logger, !arguments.empty(), &configuration_path);
 
     std::wstring recovery_path_error;
     const std::filesystem::path recovery_path =
@@ -200,14 +208,28 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
 
     switch (options.command) {
         case ctm::Command::Run:
+        case ctm::Command::AutoStart: {
             if (recovery_path.empty()) {
                 if (active_logger != nullptr) {
                     active_logger->Error(recovery_path_error);
                 }
                 return 5;
             }
+            std::wstring executable_path_error;
+            const std::filesystem::path executable_path =
+                ctm::GetExecutablePath(&executable_path_error);
+            if (executable_path.empty() && active_logger != nullptr) {
+                active_logger->Error(executable_path_error);
+            }
             return ctm::RunTrayApplication(
-                instance, active_logger, config.config, recovery_path);
+                instance,
+                active_logger,
+                config.config,
+                recovery_path,
+                configuration_path,
+                executable_path,
+                options.command == ctm::Command::AutoStart);
+        }
 
         case ctm::Command::ListWindows:
             return ListChromeWindows(active_logger);

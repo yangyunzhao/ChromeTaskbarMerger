@@ -16,7 +16,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc1-orange">
+  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc2-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -38,6 +38,8 @@ The application runs in the notification area, continuously handles Chrome windo
 - Re-registers its tray icon and reapplies the rule after Windows Explorer restarts.
 - Enforces a single running manager instance.
 - Uses a configurable low-frequency scan interval without a busy loop.
+- Optionally starts when the current user signs in to Windows, configured from
+  either the tray menu or the portable INI file.
 - Writes recovery intent before every taskbar removal.
 - Validates HWND, PID, TID, process creation time, and window class before recovery.
 - Provides a standalone `--restore-all` recovery command.
@@ -86,6 +88,7 @@ The application appears in the Windows notification area. Starting the EXE again
 | Pause management | Restores tracked Chrome buttons and stops automatic scans. |
 | Resume management | Revalidates prerequisites and reapplies the single-entry rule. |
 | Restore all Chrome buttons | Explicitly calls safe restoration for tracked and currently identifiable Chrome windows, then remains paused. |
+| Start when signing in to Windows | Atomically updates the portable configuration and the current-user Windows startup registration. |
 | Open log folder | Opens the per-user log directory. |
 | About ChromeTaskbarMerger | Shows the version, developer, license, and clickable GitHub project link. |
 | Exit | Restores tracked buttons before exiting; refuses to exit if restoration cannot be confirmed. |
@@ -97,9 +100,24 @@ Place `ChromeTaskbarMerger.ini` beside the executable:
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+start_with_windows=false
 ```
 
-The supported range is 500–60000 milliseconds. Changes take effect after restarting the application. A missing, unreadable, or invalid configuration safely falls back to 2000 milliseconds and writes a warning to the log.
+`scan_interval_ms` supports 500–60000 milliseconds. `start_with_windows` accepts
+`true` or `false` and defaults to `false`.
+
+The tray setting takes effect immediately and saves the INI file. Direct file
+edits are read only at process startup: fully exit the running tray instance and
+launch it again. Starting the EXE while an instance already exists only requests
+a rescan and is not a restart. After changing `false` to `true` by hand, one
+manual relaunch is required so the application can create its per-user Windows
+`Run` entry.
+
+Automatic launch means launch after the current user signs in, not a system
+service at boot. It requires no administrator rights. If WindowTabs has not
+started yet, ChromeTaskbarMerger waits in the tray and retries for up to 120
+seconds before remaining paused. Moving the portable directory requires one
+manual launch from the new location to repair the registered executable path.
 
 ## Logs and recovery
 
@@ -132,6 +150,7 @@ Exit code `0` means restoration completed. If buttons still do not return, keep 
 ```text
 ChromeTaskbarMerger.exe --help
 ChromeTaskbarMerger.exe --version
+ChromeTaskbarMerger.exe --autostart
 ChromeTaskbarMerger.exe --list
 ChromeTaskbarMerger.exe --experiment
 ChromeTaskbarMerger.exe --manage
@@ -142,6 +161,8 @@ ChromeTaskbarMerger.exe --restore-all
 - `--experiment` retains the interactive Phase 2 taskbar-method diagnostic.
 - `--manage` runs the diagnostic console lifecycle monitor.
 - `--restore-all` restores valid recorded state and currently identifiable Chrome taskbar registrations.
+- `--autostart` is the internal marker used by the Windows login entry. If the
+  INI setting is disabled, a stale invocation removes its registration and exits.
 - An unknown option returns exit code `2`.
 
 Release is a Windows GUI-subsystem executable. Use `Start-Process -Wait -PassThru` when a script must wait for completion or read the exit code.
@@ -172,7 +193,7 @@ The application icon source and generated multi-size ICO are stored under `asset
 
 ## Validation status
 
-Version `1.0.0-rc1` currently passes clean Debug and Release builds and 4/4 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, configuration parsing, and scan scheduling.
+Version `1.0.0-rc2` passes clean Debug and Release builds and 5/5 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, atomic configuration updates, temporary-registry startup lifecycle, portable-path repair, and startup-wait scheduling.
 
 Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation and closure, main-entry replacement, pause/resume, normal-exit restoration, and idle CPU behavior. Explorer restart, forced-termination recovery, and final portable tray acceptance remain release-candidate checks.
 
@@ -187,7 +208,10 @@ Detailed engineering evidence:
 - WindowTabs is therefore a runtime prerequisite for enabling management.
 - The taskbar entry remains fixed; it does not follow the currently active Chrome window.
 - Windows 10, other Chromium browsers, multiple virtual desktops, and all multi-monitor/DPI combinations have not yet been release-qualified.
-- Automatic startup is not included in this release candidate.
+- Windows Settings or Task Manager can disable a registered startup app; that
+  system-level decision takes precedence over the INI setting.
+- A login launch waits up to 120 seconds for WindowTabs and then remains paused;
+  start WindowTabs and select **Resume management** if that timeout is exceeded.
 
 ## Project layout
 
@@ -202,9 +226,10 @@ tests/    Automated tests and manual validation records
 
 ## Uninstall
 
-1. Select **Exit** from the tray menu and verify that all Chrome buttons return.
-2. Delete the portable application directory.
-3. Optionally delete `%LOCALAPPDATA%\ChromeTaskbarMerger` after confirming its logs and recovery journal are no longer needed.
+1. Clear **Start when signing in to Windows** in the tray menu.
+2. Select **Exit** and verify that all Chrome buttons return.
+3. Delete the portable application directory.
+4. Optionally delete `%LOCALAPPDATA%\ChromeTaskbarMerger` after confirming its logs and recovery journal are no longer needed.
 
 ## Developer
 

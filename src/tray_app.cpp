@@ -1,11 +1,13 @@
 #include "tray_app.h"
 
+#include "auto_start.h"
 #include "chrome_window.h"
 #include "ctm/version.h"
 #include "fixed_entry_manager.h"
 #include "logger.h"
 #include "recovery_journal.h"
 #include "single_instance.h"
+#include "startup_wait.h"
 #include "taskbar_controller.h"
 #include "windowtabs_presence.h"
 
@@ -27,6 +29,7 @@ namespace {
 
 constexpr UINT kTrayCallbackMessage = WM_APP + 10;
 constexpr UINT_PTR kScanTimerId = 1;
+constexpr UINT_PTR kStartupWaitTimerId = 2;
 constexpr UINT kTrayIconId = 1;
 constexpr int kApplicationIconResourceId = 101;
 
@@ -37,7 +40,8 @@ constexpr UINT kMenuResume = 103;
 constexpr UINT kMenuRestoreAll = 104;
 constexpr UINT kMenuOpenLogs = 105;
 constexpr UINT kMenuAbout = 106;
-constexpr UINT kMenuExit = 107;
+constexpr UINT kMenuStartWithWindows = 107;
+constexpr UINT kMenuExit = 108;
 
 constexpr wchar_t kProjectUrl[] =
     L"https://github.com/yangyunzhao/ChromeTaskbarMerger";
@@ -110,10 +114,16 @@ public:
     TrayApplication(HINSTANCE instance,
                     Logger* logger,
                     const AppConfig& config,
-                    std::filesystem::path recovery_path)
+                    std::filesystem::path recovery_path,
+                    std::filesystem::path configuration_path,
+                    std::filesystem::path executable_path,
+                    const bool launched_at_login)
         : instance_(instance),
           logger_(logger),
           config_(config),
+          configuration_path_(std::move(configuration_path)),
+          executable_path_(std::move(executable_path)),
+          launched_at_login_(launched_at_login),
           recovery_journal_(std::move(recovery_path)),
           manager_(&controller_, &recovery_journal_) {}
 
@@ -131,6 +141,8 @@ public:
             return 4;
         }
 
+        SynchronizeAutoStartRegistration();
+
         const TaskbarOperationResult initialization =
             controller_.InitializeTaskbarList();
         if (!initialization.succeeded) {
@@ -147,6 +159,7 @@ public:
         }
 
         UpdateTimer();
+        UpdateStartupWaitTimer();
         UpdateTrayTooltip();
 
         MSG message{};
@@ -284,6 +297,76 @@ private:
         tray_icon_added_ = false;
     }
 
+    void SynchronizeAutoStartRegistration() {
+        const AutoStartOperationResult result =
+            auto_start_registry_.SetEnabled(
+                config_.start_with_windows, executable_path_);
+        if (!result.succeeded) {
+            LogError(
+                L"Synchronizing Windows-login startup failed with Win32 "
+                L"error " +
+                std::to_wstring(result.error_code) + L'.');
+            ShowNotification(
+                L"自动启动配置未应用",
+                L"无法同步 Windows 登录启动项，请查看日志。",
+                NIIF_WARNING);
+            return;
+        }
+        LogInfo(
+            L"Windows-login startup synchronized; enabled=" +
+            std::wstring(config_.start_with_windows ? L"true" : L"false") +
+            L"; changed=" +
+            std::wstring(result.changed ? L"yes" : L"no") + L'.');
+    }
+
+    void ToggleStartWithWindows() {
+        const bool previous = config_.start_with_windows;
+        const bool requested = !previous;
+        const AppConfigSaveResult saved =
+            SaveStartWithWindowsSetting(configuration_path_, requested);
+        if (!saved.succeeded) {
+            LogError(L"Saving start_with_windows failed: " +
+                     saved.error_message);
+            ShowNotification(
+                L"自动启动设置未保存",
+                L"无法写入 ChromeTaskbarMerger.ini，设置保持不变。",
+                NIIF_ERROR);
+            return;
+        }
+
+        const AutoStartOperationResult registered =
+            auto_start_registry_.SetEnabled(requested, executable_path_);
+        if (!registered.succeeded) {
+            const AppConfigSaveResult rollback =
+                SaveStartWithWindowsSetting(configuration_path_, previous);
+            LogError(
+                L"Updating Windows-login startup failed with Win32 error " +
+                std::to_wstring(registered.error_code) +
+                (rollback.succeeded
+                     ? L"; the configuration change was rolled back."
+                     : L"; configuration rollback also failed: " +
+                           rollback.error_message));
+            ShowNotification(
+                L"自动启动设置未应用",
+                rollback.succeeded
+                    ? L"Windows 启动项更新失败，配置已恢复原值。"
+                    : L"Windows 启动项和配置回滚均失败，请查看日志。",
+                NIIF_ERROR);
+            return;
+        }
+
+        config_.start_with_windows = requested;
+        LogInfo(
+            L"Windows-login startup changed from " +
+            std::wstring(previous ? L"enabled" : L"disabled") + L" to " +
+            std::wstring(requested ? L"enabled" : L"disabled") + L'.');
+        ShowNotification(
+            requested ? L"已启用自动启动" : L"已关闭自动启动",
+            requested ? L"下次登录 Windows 时将自动运行。"
+                      : L"下次登录 Windows 时不会自动运行。",
+            NIIF_INFO);
+    }
+
     void InitializeRecoveryAndManagement() {
         const RecoveryLoadResult load = recovery_journal_.Load();
         if (!load.succeeded) {
@@ -318,10 +401,35 @@ private:
             return;
         }
 
+        if (launched_at_login_) {
+            const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
+            if (!windowtabs.query_succeeded || !windowtabs.running) {
+                management_enabled_ = false;
+                startup_wait_schedule_.Start(
+                    StartupWaitSchedule::Clock::now());
+                if (windowtabs.query_succeeded) {
+                    LogInfo(
+                        L"Automatic login launch is waiting for "
+                        L"WindowTabs.exe.");
+                } else {
+                    LogError(
+                        L"WindowTabs detection failed during automatic login "
+                        L"launch with Win32 error " +
+                        std::to_wstring(windowtabs.error_code) +
+                        L"; startup waiting will retry.");
+                }
+                ShowNotification(
+                    L"正在等待 WindowTabs",
+                    L"WindowTabs 就绪后将自动开始任务栏管理。",
+                    NIIF_INFO);
+                return;
+            }
+        }
+
         management_enabled_ = true;
         if (!Synchronize(L"Startup synchronization", true)) {
             management_enabled_ = false;
-        } else {
+        } else if (!launched_at_login_) {
             ShowNotification(
                 L"ChromeTaskbarMerger",
                 L"任务栏单入口管理已启动。",
@@ -421,6 +529,8 @@ private:
     }
 
     [[nodiscard]] bool ForceRestoreAll() {
+        startup_wait_schedule_.Stop();
+        UpdateStartupWaitTimer();
         management_enabled_ = false;
         UpdateTimer();
         bool succeeded = RestoreTracked(
@@ -472,7 +582,99 @@ private:
         return succeeded;
     }
 
+    bool UpdateStartupWaitTimer() {
+        if (window_ == nullptr) {
+            return false;
+        }
+        KillTimer(window_, kStartupWaitTimerId);
+        if (!startup_wait_schedule_.active()) {
+            return true;
+        }
+
+        SetLastError(ERROR_SUCCESS);
+        if (SetTimer(
+                window_, kStartupWaitTimerId,
+                static_cast<UINT>(
+                    startup_wait_schedule_.retry_interval().count()),
+                nullptr) != 0) {
+            return true;
+        }
+
+        const DWORD error_code = GetLastError();
+        startup_wait_schedule_.Stop();
+        LogError(
+            L"Creating the WindowTabs startup-wait timer failed with Win32 "
+            L"error " +
+            std::to_wstring(error_code) + L'.');
+        UpdateTrayTooltip();
+        ShowNotification(
+            L"自动启动等待失败",
+            L"无法等待 WindowTabs，任务栏管理保持暂停。",
+            NIIF_WARNING);
+        return false;
+    }
+
+    void HandleStartupWaitTimer() {
+        if (!startup_wait_schedule_.active()) {
+            return;
+        }
+        const StartupWaitSchedule::TimePoint now =
+            StartupWaitSchedule::Clock::now();
+        if (startup_wait_schedule_.HasTimedOut(now)) {
+            startup_wait_schedule_.Stop();
+            UpdateStartupWaitTimer();
+            UpdateTrayTooltip();
+            LogInfo(
+                L"Automatic login launch timed out waiting for "
+                L"WindowTabs.exe; management remains paused.");
+            ShowNotification(
+                L"等待 WindowTabs 超时",
+                L"任务栏管理保持暂停；启动 WindowTabs 后可选择“恢复管理”。",
+                NIIF_WARNING);
+            return;
+        }
+        if (!startup_wait_schedule_.IsAttemptDue(now)) {
+            return;
+        }
+        startup_wait_schedule_.MarkAttempted(now);
+
+        const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
+        if (!windowtabs.query_succeeded) {
+            LogError(
+                L"WindowTabs detection failed during startup waiting with "
+                L"Win32 error " +
+                std::to_wstring(windowtabs.error_code) + L'.');
+            return;
+        }
+        if (!windowtabs.running) {
+            return;
+        }
+
+        startup_wait_schedule_.Stop();
+        UpdateStartupWaitTimer();
+        management_enabled_ = true;
+        if (Synchronize(L"Delayed startup synchronization", true) &&
+            UpdateTimer()) {
+            ShowNotification(
+                L"自动启动完成",
+                L"WindowTabs 已就绪，任务栏单入口管理已启动。",
+                NIIF_INFO);
+        }
+        UpdateTrayTooltip();
+    }
+
     void PauseManagement() {
+        if (startup_wait_schedule_.active()) {
+            startup_wait_schedule_.Stop();
+            UpdateStartupWaitTimer();
+            UpdateTrayTooltip();
+            LogInfo(L"Automatic WindowTabs startup waiting was canceled.");
+            ShowNotification(
+                L"管理已暂停",
+                L"已取消等待 WindowTabs。",
+                NIIF_INFO);
+            return;
+        }
         if (!management_enabled_) {
             return;
         }
@@ -499,6 +701,10 @@ private:
                 L"请先使用“恢复全部 Chrome 按钮”，再恢复管理。",
                 NIIF_WARNING);
             return;
+        }
+        if (startup_wait_schedule_.active()) {
+            startup_wait_schedule_.Stop();
+            UpdateStartupWaitTimer();
         }
         recovery_required_ = false;
         management_enabled_ = true;
@@ -551,6 +757,8 @@ private:
     }
 
     void RequestExit() {
+        startup_wait_schedule_.Stop();
+        UpdateStartupWaitTimer();
         if (!RestoreTracked(L"Tray normal-exit restoration", true)) {
             recovery_required_ = true;
             management_enabled_ = false;
@@ -669,15 +877,20 @@ private:
         }
         const std::wstring status = recovery_required_
                                         ? L"状态：需要恢复"
-                                        : (management_enabled_
-                                               ? L"状态：管理中"
-                                               : L"状态：已暂停");
+                                        : (startup_wait_schedule_.active()
+                                               ? L"状态：等待 WindowTabs"
+                                               : (management_enabled_
+                                                      ? L"状态：管理中"
+                                                      : L"状态：已暂停"));
         AppendMenuW(menu, MF_STRING | MF_DISABLED, kMenuStatus, status.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuScanNow, L"立即重新扫描");
         AppendMenuW(
             menu,
-            MF_STRING | (management_enabled_ ? MF_ENABLED : MF_GRAYED),
+            MF_STRING |
+                (management_enabled_ || startup_wait_schedule_.active()
+                     ? MF_ENABLED
+                     : MF_GRAYED),
             kMenuPause,
             L"暂停管理");
         AppendMenuW(
@@ -689,6 +902,13 @@ private:
             kMenuResume,
             L"恢复管理");
         AppendMenuW(menu, MF_STRING, kMenuRestoreAll, L"恢复全部 Chrome 按钮");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(
+            menu,
+            MF_STRING |
+                (config_.start_with_windows ? MF_CHECKED : MF_UNCHECKED),
+            kMenuStartWithWindows,
+            L"随 Windows 登录自动启动");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuOpenLogs, L"打开日志目录");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"关于 ChromeTaskbarMerger");
@@ -735,6 +955,9 @@ private:
                 break;
             case kMenuRestoreAll:
                 static_cast<void>(ForceRestoreAll());
+                break;
+            case kMenuStartWithWindows:
+                ToggleStartWithWindows();
                 break;
             case kMenuOpenLogs:
                 OpenLogDirectory();
@@ -805,6 +1028,8 @@ private:
         std::wstring tooltip = L"ChromeTaskbarMerger - ";
         if (recovery_required_) {
             tooltip += L"需要恢复";
+        } else if (startup_wait_schedule_.active()) {
+            tooltip += L"等待 WindowTabs";
         } else if (management_enabled_) {
             tooltip += L"管理中";
         } else {
@@ -870,6 +1095,8 @@ private:
                 if (wparam == kScanTimerId && management_enabled_) {
                     static_cast<void>(Synchronize(
                         L"Periodic lifecycle synchronization", true));
+                } else if (wparam == kStartupWaitTimerId) {
+                    HandleStartupWaitTimer();
                 }
                 return 0;
 
@@ -967,6 +1194,9 @@ private:
     HINSTANCE instance_ = nullptr;
     Logger* logger_ = nullptr;
     AppConfig config_;
+    std::filesystem::path configuration_path_;
+    std::filesystem::path executable_path_;
+    bool launched_at_login_ = false;
     HWND window_ = nullptr;
     UINT taskbar_created_message_ = 0;
     HICON large_icon_ = nullptr;
@@ -975,6 +1205,8 @@ private:
     bool management_enabled_ = false;
     bool recovery_required_ = false;
     std::size_t last_window_count_ = 0;
+    AutoStartRegistry auto_start_registry_;
+    StartupWaitSchedule startup_wait_schedule_;
     TaskbarController controller_;
     RecoveryJournal recovery_journal_;
     FixedEntryManager manager_;
@@ -1054,7 +1286,10 @@ int RunTrayApplication(
     const HINSTANCE instance,
     Logger* const logger,
     const AppConfig& config,
-    const std::filesystem::path& recovery_journal_path) {
+    const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& configuration_path,
+    const std::filesystem::path& executable_path,
+    const bool launched_at_login) {
     SingleInstanceGuard singleton;
     DWORD singleton_error = ERROR_SUCCESS;
     const SingleInstanceStatus status = singleton.Acquire(
@@ -1084,8 +1319,32 @@ int RunTrayApplication(
         return notified ? 0 : 4;
     }
 
+    if (launched_at_login && !config.start_with_windows) {
+        const AutoStartOperationResult cleanup =
+            AutoStartRegistry().SetEnabled(false, executable_path);
+        if (logger != nullptr) {
+            if (cleanup.succeeded) {
+                logger->Info(
+                    L"A stale automatic-login invocation was ignored and "
+                    L"its Run registration was removed.");
+            } else {
+                logger->Error(
+                    L"Removing a stale automatic-login registration failed "
+                    L"with Win32 error " +
+                    std::to_wstring(cleanup.error_code) + L'.');
+            }
+        }
+        return cleanup.succeeded ? 0 : 4;
+    }
+
     TrayApplication application(
-        instance, logger, config, recovery_journal_path);
+        instance,
+        logger,
+        config,
+        recovery_journal_path,
+        configuration_path,
+        executable_path,
+        launched_at_login);
     return application.Run();
 }
 

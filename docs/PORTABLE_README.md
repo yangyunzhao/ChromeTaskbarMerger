@@ -1,4 +1,4 @@
-# ChromeTaskbarMerger 1.0.0-rc1 portable x64
+# ChromeTaskbarMerger 1.0.0-rc2 portable x64
 
 ## 使用前提
 
@@ -18,6 +18,7 @@
 - 暂停管理；
 - 恢复管理；
 - 恢复全部 Chrome 按钮；
+- 配置“随 Windows 登录自动启动”；
 - 打开日志目录；
 - 查看“关于”、版本、开发人员和项目地址；
 - 恢复本次修改并退出。
@@ -29,9 +30,12 @@
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+start_with_windows=false
 ```
 
-允许范围为 500～60000 毫秒，修改后重启程序生效。缺失或无效配置会安全回退到 2000 毫秒，并写入警告日志。
+扫描间隔允许范围为 500～60000 毫秒。`start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会立即保存并应用；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
+
+自动启动发生在当前用户登录后，无需管理员权限。WindowTabs 启动较慢时，程序会在托盘中等待并重试最多 120 秒。移动便携目录后，需要从新位置手动运行一次以修复启动路径。
 
 ## 日志和崩溃恢复
 
@@ -68,8 +72,9 @@ $process.ExitCode
 
 ## 正常退出和卸载
 
-1. 使用托盘菜单“退出”，确认 Chrome 按钮全部恢复；
-2. 删除整个便携目录即可卸载；
-3. 确认不再需要日志后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
+1. 取消勾选托盘菜单“随 Windows 登录自动启动”；
+2. 使用托盘菜单“退出”，确认 Chrome 按钮全部恢复；
+3. 删除整个便携目录即可卸载；
+4. 确认不再需要日志后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
 
 不要在仍有按钮被隐藏时直接删除恢复日志。

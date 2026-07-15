@@ -8,6 +8,7 @@ namespace ctm {
 
 enum class Command {
     Run,
+    AutoStart,
     ListWindows,
     Experiment,
     Manage,

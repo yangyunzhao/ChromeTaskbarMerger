@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -84,6 +85,25 @@ void WriteTextFile(const std::filesystem::path& path,
     output.write(content.data(), static_cast<std::streamsize>(content.size()));
 }
 
+[[nodiscard]] std::string ReadTextFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::in | std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::size_t CountOccurrences(
+    const std::string_view text,
+    const std::string_view value) {
+    std::size_t count = 0;
+    std::size_t position = 0;
+    while ((position = text.find(value, position)) != std::string_view::npos) {
+        ++count;
+        position += value.size();
+    }
+    return count;
+}
+
 [[nodiscard]] ctm::TaskbarMutationState MakeRecoveryState(
     const std::uintptr_t hwnd,
     const DWORD process_id,
@@ -115,6 +135,8 @@ void TestMissingConfigurationUsesDefaults() {
            "a missing optional configuration should not be an error");
     Expect(result.config.scan_interval == ctm::kDefaultScanInterval,
            "a missing configuration should use the two-second default");
+    Expect(!result.config.start_with_windows,
+           "a missing configuration should keep login startup disabled");
 }
 
 void TestValidConfigurationLoadsScanInterval() {
@@ -125,14 +147,99 @@ void TestValidConfigurationLoadsScanInterval() {
     const std::filesystem::path path = directory.path() / L"valid.ini";
     WriteTextFile(
         path,
-        "[ChromeTaskbarMerger]\r\nscan_interval_ms=1250\r\n");
+        "[ChromeTaskbarMerger]\r\nscan_interval_ms=1250\r\n"
+        "start_with_windows=TrUe\r\n");
     const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
     Expect(result.file_found && result.read_succeeded,
            "a valid configuration should load successfully");
     Expect(result.config.scan_interval == std::chrono::milliseconds(1250),
            "the configured scan interval should be applied");
+    Expect(result.config.start_with_windows,
+           "a case-insensitive true value should enable login startup");
     Expect(result.warnings.empty(),
            "a valid configuration should not emit warnings");
+}
+
+void TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"便携配置.ini";
+    WriteTextFile(
+        path,
+        "; keep this comment\r\n"
+        "[ChromeTaskbarMerger]\r\n"
+        "scan_interval_ms=1250\r\n"
+        "start_with_windows=false\r\n"
+        "start_with_windows=false\r\n"
+        "[OtherSection]\r\n"
+        "preserve=this-value\r\n");
+
+    ctm::AppConfigSaveResult save =
+        ctm::SaveStartWithWindowsSetting(path, true);
+    Expect(save.succeeded,
+           "the tray setting should save through an atomic replacement");
+    ctm::AppConfigLoadResult loaded = ctm::LoadAppConfig(path);
+    Expect(loaded.read_succeeded && loaded.config.start_with_windows,
+           "the saved true value should load after an application restart");
+    Expect(loaded.config.scan_interval == std::chrono::milliseconds(1250),
+           "saving startup should preserve the configured scan interval");
+
+    const std::string enabled_text = ReadTextFile(path);
+    Expect(enabled_text.find("; keep this comment") != std::string::npos &&
+               enabled_text.find("preserve=this-value") != std::string::npos,
+           "saving startup should preserve comments and unrelated sections");
+    Expect(CountOccurrences(enabled_text, "start_with_windows=") == 1,
+           "saving startup should remove ambiguous duplicate settings");
+
+    save = ctm::SaveStartWithWindowsSetting(path, false);
+    loaded = ctm::LoadAppConfig(path);
+    Expect(save.succeeded && !loaded.config.start_with_windows,
+           "saving false should disable startup in the persisted setting");
+
+    bool temporary_file_left_behind = false;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(directory.path())) {
+        if (entry.path().filename().wstring().find(L".tmp-") !=
+            std::wstring::npos) {
+            temporary_file_left_behind = true;
+        }
+    }
+    Expect(!temporary_file_left_behind,
+           "a successful atomic save should not leave a temporary file");
+}
+
+void TestSavingCreatesAMissingPortableConfiguration() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"new.ini";
+    const ctm::AppConfigSaveResult save =
+        ctm::SaveStartWithWindowsSetting(path, true);
+    const ctm::AppConfigLoadResult loaded = ctm::LoadAppConfig(path);
+    Expect(save.succeeded && loaded.file_found &&
+               loaded.config.start_with_windows,
+           "saving should create a missing portable configuration");
+    Expect(loaded.config.scan_interval == ctm::kDefaultScanInterval,
+           "a newly created configuration should retain the scan default");
+}
+
+void TestInvalidStartWithWindowsValueFailsClosed() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"invalid-start.ini";
+    WriteTextFile(
+        path,
+        "[ChromeTaskbarMerger]\nstart_with_windows=perhaps\n");
+    const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
+    Expect(!result.config.start_with_windows,
+           "an invalid startup value should retain the safe disabled default");
+    Expect(result.warnings.size() == 1,
+           "an invalid startup value should emit a precise warning");
 }
 
 void TestInvalidConfigurationFallsBackSafely() {
@@ -321,6 +428,9 @@ int main() {
     TestMissingConfigurationUsesDefaults();
     TestValidConfigurationLoadsScanInterval();
     TestInvalidConfigurationFallsBackSafely();
+    TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration();
+    TestSavingCreatesAMissingPortableConfiguration();
+    TestInvalidStartWithWindowsValueFailsClosed();
     TestRecoverySerializationRoundTrip();
     TestCorruptRecoveryDataIsRejectedAsAWhole();
     TestRecoveryJournalSavesAtomicallyAndClears();

@@ -63,6 +63,8 @@ add_library(
         src/app_config.h
         src/app_paths.cpp
         src/app_paths.h
+        src/auto_start.cpp
+        src/auto_start.h
         src/command_line.cpp
         src/command_line.h
         src/fixed_entry_app.cpp
@@ -81,6 +83,8 @@ add_library(
         src/scan_schedule.h
         src/single_instance.cpp
         src/single_instance.h
+        src/startup_wait.cpp
+        src/startup_wait.h
         src/taskbar_controller.cpp
         src/taskbar_controller.h
         src/taskbar_experiment.cpp
@@ -107,7 +111,7 @@ target_include_directories(
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 ctm_enable_warnings(ctm_core)
-target_link_libraries(ctm_core PUBLIC Dwmapi Ole32)
+target_link_libraries(ctm_core PUBLIC Advapi32 Dwmapi Ole32)
 
 add_executable(
     ChromeTaskbarMerger

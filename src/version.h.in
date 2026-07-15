@@ -5,7 +5,7 @@
 namespace ctm {
 
 inline constexpr std::wstring_view kApplicationName = L"ChromeTaskbarMerger";
-inline constexpr std::wstring_view kVersion = L"@PROJECT_VERSION@-rc1";
-inline constexpr std::string_view kVersionUtf8 = "@PROJECT_VERSION@-rc1";
+inline constexpr std::wstring_view kVersion = L"@PROJECT_VERSION@-rc2";
+inline constexpr std::string_view kVersionUtf8 = "@PROJECT_VERSION@-rc2";
 
 }  // namespace ctm
