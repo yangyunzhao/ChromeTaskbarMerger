@@ -1,184 +1,132 @@
 # ChromeTaskbarMerger
 
-ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多个 Chrome 主窗口同时存在时，让 Windows 任务栏只保留一个固定 Chrome 入口。
+ChromeTaskbarMerger 是一个 Windows 原生便携工具：当多个 Chrome 主窗口同时存在时，让 Windows 任务栏只保留一个固定 Chrome 入口。
 
 ## 当前状态
 
-**Phase 0～Phase 4** 均已完成验收。Phase 4 已在真实 Chrome 和 Windows 任务栏上确认窗口新建、关闭、全部关闭后重开、暂停/恢复、正常退出恢复和低 CPU 运行；Phase 5 已允许开始但尚未开始。
+- Phase 0～Phase 4 已完成自动与真实任务栏验收；
+- Phase 5、Phase 6 的实现和自动验收已完成；
+- 当前产物为 `1.0.0-rc1`，等待 Phase 5/6 合并人工验收后再标记为 V1 发布候选。
 
-当前提供：
+当前版本提供托盘常驻、可配置扫描间隔、单实例、Explorer 重建处理、异常退出恢复记录、显式 `--restore-all`、日志和便携发布包。任务栏实现采用已经过真实验证的 `ITaskbarList::DeleteTab/AddTab` 方法，不关闭 Chrome，也不修改 Chrome 配置。
 
-- CMake C++20 工程；
-- `--help`、`--version`、只读的 `--list`、交互式 `--experiment`，以及固定入口 `--manage` 命令行入口；
-- `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log` 基础日志；
-- 无第三方测试框架的命令行、窗口识别、任务栏恢复规则和扫描调度测试；
-- Debug 控制台程序和 Release Windows 子系统程序。
+完整开发计划和验收门槛见 [CODEX_TASK_Chrome_Taskbar_Merger_CPP.md](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)，逐项证据见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。
 
-`--list` 和无参数启动保持只读。`--experiment` 只有在用户输入精确的 `APPLY` 后才临时修改一个窗口并立即恢复；`--manage` 只有在用户输入精确的 `MANAGE` 后才启动固定入口生命周期监控，并在暂停或正常退出时恢复本会话跟踪的修改。
+## 直接使用便携版
 
-完整开发计划见 [CODEX_TASK_Chrome_Taskbar_Merger_CPP.md](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)。
+本地已生成：
 
-## 构建要求
+```text
+dist\ChromeTaskbarMerger\
+dist\ChromeTaskbarMerger-1.0.0-rc1-portable-x64.zip
+```
 
-- Windows 11 x64；
-- CMake 3.24 或更高版本；
-- Visual Studio 2022 或更高版本，包含“使用 C++ 的桌面开发”组件。
+便携目录包含：
 
-## 构建
+```text
+ChromeTaskbarMerger.exe
+ChromeTaskbarMerger.ini
+README.md
+LICENSE
+```
+
+使用前请先启动 WindowTabs，并确保 Chrome 主窗口可通过 WindowTabs 到达和操作。双击 `ChromeTaskbarMerger.exe` 后程序没有普通主窗口或控制台，而是驻留在通知区域。再次启动 EXE 不会创建第二套管理逻辑，只会通知已有实例立即扫描。
+
+右键托盘图标可以立即扫描、暂停管理、恢复管理、恢复全部 Chrome 按钮、打开日志目录和正常退出。正常退出会先恢复本程序移除的按钮；恢复失败时程序会拒绝退出并保留恢复记录。
+
+已知兼容性影响：被合并的 Chrome 窗口可能不会出现在 Alt+Tab 中。这不阻塞当前 V1 目标，因为窗口仍可通过 WindowTabs 到达。WindowTabs 停止或无法检测时，程序会恢复已跟踪按钮并暂停管理。
+
+## 配置
+
+`ChromeTaskbarMerger.ini` 与 EXE 位于同一目录：
+
+```ini
+[ChromeTaskbarMerger]
+scan_interval_ms=2000
+```
+
+允许范围为 500～60000 毫秒，重启程序后生效。配置文件缺失、不可读或数值无效时，程序使用 2000 毫秒默认值并记录警告。
+
+## 日志与异常恢复
+
+运行数据保存在当前用户的本地应用数据目录，不写入便携目录：
+
+```text
+%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log
+%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv
+```
+
+每次调用 `DeleteTab` 前，程序会先原子写入恢复记录。恢复时同时校验 HWND、PID、TID、进程创建时间和窗口类，避免把陈旧记录应用到复用同一 HWND 的其他窗口。
+
+如果程序被强制结束，重新启动 EXE；程序会先恢复仍能精确识别的上次状态，再重新应用单入口规则。也可以从托盘选择“恢复全部 Chrome 按钮”，或在 PowerShell 中等待恢复命令结束并读取退出码：
+
+```powershell
+$process = Start-Process `
+    -FilePath .\ChromeTaskbarMerger.exe `
+    -ArgumentList '--restore-all' `
+    -Wait -PassThru
+$process.ExitCode
+```
+
+如果仍未恢复，请保留日志，在任务管理器中重启“Windows 资源管理器”，再执行一次恢复命令。不要在仍有按钮被移除时手工删除恢复记录。
+
+## 命令行诊断
+
+```text
+ChromeTaskbarMerger.exe --help
+ChromeTaskbarMerger.exe --version
+ChromeTaskbarMerger.exe --list
+ChromeTaskbarMerger.exe --experiment
+ChromeTaskbarMerger.exe --manage
+ChromeTaskbarMerger.exe --restore-all
+```
+
+- `--list` 只读枚举并解释 Chrome 窗口的接受/排除原因；
+- `--experiment` 保留 Phase 2 的交互式 A/B 诊断路径；
+- `--manage` 是 Debug/诊断用控制台生命周期监控；
+- `--restore-all` 会恢复有效记录和当前可识别 Chrome 的任务栏注册；若托盘实例正在运行，则命令通知该实例完成恢复并保持暂停；
+- 未知参数返回退出码 `2`。
+
+Release 是 Windows GUI 子系统程序。需要可靠等待命令完成或读取退出码时，请使用上面的 `Start-Process -Wait -PassThru` 形式。
+
+## 构建与测试
+
+要求 Windows 11 x64、CMake 3.24 或更高版本，以及带“使用 C++ 的桌面开发”组件的 Visual Studio 2022 或更高版本。
 
 ```powershell
 cmake -S . -B build -A x64
 cmake --build build --config Debug
 cmake --build build --config Release
-```
-
-## 自动测试
-
-```powershell
 ctest --test-dir build -C Debug --output-on-failure
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-## 命令行
+生成经过全新 Debug/Release 构建和测试的便携包：
 
 ```powershell
-.\build\Debug\ChromeTaskbarMerger.exe --help
-.\build\Debug\ChromeTaskbarMerger.exe --version
-.\build\Debug\ChromeTaskbarMerger.exe --list
-.\build\Debug\ChromeTaskbarMerger.exe --experiment
-.\build\Debug\ChromeTaskbarMerger.exe --manage
-.\build\Debug\ChromeTaskbarMerger.exe
+.\scripts\build-portable.ps1
 ```
 
-未知参数会返回退出码 `2`：
+脚本会清理仓库内的专用 `build-portable` 和 `dist` 输出，分别执行 Debug/Release 构建与 CTest，再安装四个交付文件并创建 ZIP。MSVC 运行库静态链接，因此便携包不依赖额外的 VCRUNTIME/MSVCP DLL。
 
-```powershell
-.\build\Debug\ChromeTaskbarMerger.exe --unknown
-$LASTEXITCODE
-```
+当前自动结果：Debug/Release 均无编译警告，CTest 均为 4/4。测试覆盖命令行解析、窗口身份、固定入口生命周期、恢复幂等性、写前日志失败保护、损坏/截断日志整体拒绝、PID/创建时间不匹配保护、TaskbarCreated 状态重建、单实例互斥体、同步/异步实例通知、配置解析和扫描调度。
 
-## 日志
+## 已完成的真实任务栏验证
 
-默认日志文件：
+2026-07-15 使用 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115 和 WindowTabs `ss_2026.07.14` 完成 Phase 1～4 验收：
 
-```text
-%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log
-```
+- Chrome 窗口识别与用户实际打开的三个主窗口一致；
+- 方法 A `DeleteTab/AddTab` 能移除并恢复按钮，Chrome 和 WindowTabs 仍可操作；方法 B 因窗口可达性较差被淘汰；
+- 1、3、5 个 Chrome 窗口均能固定保留一个入口；
+- 新建、关闭非主窗口、关闭主入口、全部关闭后重开均能自动收敛；
+- 暂停、恢复管理和正常退出行为正确，空闲 CPU 正常，日志无恢复遗留。
 
-日志目录无法创建时，程序会输出警告，但不会崩溃。
+Phase 5/6 中 Explorer 重启、强制结束后的持久恢复、托盘菜单和 Release 便携体验仍需要真实桌面人工确认。
 
-## Phase 2：交互式任务栏实验
+## 正常卸载
 
-Phase 2 分别实验以下两种 Windows 路径：
+1. 从托盘菜单选择“退出”，确认所有 Chrome 按钮恢复；
+2. 删除便携目录；
+3. 确认不再需要日志后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
 
-- 方法 A：`ITaskbarList::DeleteTab` / `AddTab`；
-- 方法 B：清除 `WS_EX_APPWINDOW`、设置 `WS_EX_TOOLWINDOW`，并使用 `SWP_FRAMECHANGED` 刷新；恢复时写回完整原始扩展样式。
-
-`--experiment` 保留为可重复诊断入口。请使用 Debug 控制台版本，至少保留两个、建议三个 Chrome 主窗口，并选择一个没有未保存工作、非关键的窗口。程序输入 `APPLY` 前不会修改任何窗口；输入后不要关闭 PowerShell 或强制结束进程，按提示完成观察，程序会自动恢复。
-
-完整的两轮操作、日志保存方式、实际结果和异常恢复步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。任务栏视觉结论来自用户实际观察，而不是仅凭 API 返回值推断。
-
-实验退出码：
-
-| 退出码 | 含义 |
-| --- | --- |
-| 0 | API 与必需人工观察均通过，或在 `APPLY` 前安全取消 |
-| 4 | 前置条件或移除 API 失败 |
-| 5 | 自动恢复未能确认完成，需要人工恢复 |
-| 7 | 用户报告按钮未消失、窗口不可用或按钮未恢复 |
-| 8 | 必需视觉问题回答为未知，结论不完整 |
-
-Phase 2 于 2026-07-15 在 Windows 11 Pro 10.0.26200、Chrome 150.0.7871.115、WindowTabs `ss_2026.07.14` 环境完成真实窗口验收：
-
-| 方法 | 按钮移除/恢复 | Chrome 与 WindowTabs | Alt+Tab | 结论 |
-| --- | --- | --- | --- | --- |
-| A：`DeleteTab` / `AddTab` | 均成功，无需重启 Explorer | 窗口仍可用，WindowTabs 可切换 | 隐藏期间缺项 | **采用** |
-| B：扩展样式 | 均成功，原样式精确恢复 | 隐藏期间无法正常到达目标窗口 | 缺项 | **淘汰** |
-
-后续实现固定采用方法 A。Alt+Tab 缺项是已知兼容性代价，但不阻塞当前 V1 目标；方法 B 只保留为实验诊断路径，不作为自动回退。自动验收使用 CMake 4.3.0、Visual Studio 18 2026 Community、MSVC 19.51.36246 和 Windows SDK 10.0.26100.0；Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过。
-
-## Phase 4：固定主入口生命周期监控
-
-请使用 Debug 控制台版本：
-
-```powershell
-.\build\Debug\ChromeTaskbarMerger.exe --manage
-```
-
-程序先只读列出可管理窗口；只有输入精确的 `MANAGE` 才会应用规则。首次同步优先保留启动时的前台 Chrome，否则保留最低 HWND 对应的稳定入口。只要该窗口身份仍有效，切换 WindowTabs、Alt+Tab、鼠标或其他前台程序都不会更换入口。开始后每 2 秒自动扫描一次 Chrome 生命周期；控制台以阻塞方式等待扫描截止时间或命令，不使用忙循环。
-
-以下命令均为单键操作，**无需按 Enter**：
-
-| 命令 | 行为 |
-| --- | --- |
-| `s` | 立即扫描；启用时同步，暂停时只读 |
-| `a` | 应用/恢复固定入口管理并立即扫描 |
-| `r` | 恢复本会话移除的全部按钮并暂停 |
-| `h` | 显示命令帮助 |
-| `q` | 恢复全部并正常退出 |
-
-Phase 2 表明被移除的 Chrome 不会出现在 Alt+Tab 中，因此 `--manage` 要求 `WindowTabs.exe` 正在运行。每次自动或手动同步前都会检查；若 WindowTabs 不可用，将停止新增移除、恢复已跟踪按钮并暂停。重新启动 WindowTabs 后按 `a` 可恢复管理。
-
-开始管理后 Ctrl+C 被忽略，请使用 `q` 正常退出。正常退出、`r` 和异常作用域退出只恢复本会话中 `DeleteTab` 成功的窗口，并在失败时重试一次。若出现恢复警告或退出码 `5`，不要再次启动管理，保留日志并通过任务管理器重启 Windows 资源管理器。
-
-Debug/Release 构建无警告，Debug/Release CTest 均为 3/3 通过。自动测试使用伪任务栏控制器和可控时钟覆盖 0、1、3、5 窗口、运行中新建窗口、关闭非主/主窗口、全部关闭后重开、固定主入口、重复同步、暂停后重用、失败重试、HWND 身份变化、2 秒扫描间隔和去抖。
-
-2026-07-15 真实任务栏验收通过：一窗口无需移除；三窗口恰好移除/恢复两个非主入口，并验证 `r` 后恢复、`a` 后重新应用；五窗口恰好移除/恢复四个非主入口。三轮重复扫描均保持固定主入口 `HWND=0x0000000000020332`，没有重复 API 调用。日志合计为 7 次成功同步、8 次成功 `DeleteTab`、8 次成功 `AddTab`、4 次成功恢复流程，错误和警告均为 0。用户确认管理期间任务栏只剩一个入口、全部 Chrome 仍可由 WindowTabs 操作，恢复和退出后所有入口重新出现。完整证据与回归步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。
-
-Phase 4 于 2026-07-15 完成真实任务栏验收：从 1 个窗口开始，依次新增到 3 个窗口时均在一个观察周期内保持 1 个入口；关闭非主窗口和主入口、全部关闭后重开 3 个窗口均能自动收敛；`r` 暂停后按钮保持恢复，`a` 能重新应用，`q` 后全部按钮恢复。用户确认空闲 CPU 正常。日志记录 11 次成功生命周期同步、6 次实际 `DeleteTab`、5 次实际 `AddTab` 和 1 次已关闭窗口的安全跳过，实际 API 的 HRESULT/Win32 均为 0，最终跟踪项为 0，未出现本次会话错误或恢复遗留。PowerShell 退出码未捕获，但日志明确记录正常退出恢复成功，且视觉恢复完整。
-
-## Phase 0 验收记录
-
-验收日期：2026-07-15。
-
-验证环境：
-
-- CMake 4.3.0；
-- Visual Studio 18 2026 Community；
-- MSVC 19.51.36246；
-- Windows SDK 10.0.26100.0；
-- x64 目标平台。
-
-| 验收项 | 结果 |
-| --- | --- |
-| CMake x64 配置 | PASS |
-| Debug 构建 | PASS，无编译警告 |
-| Release 构建 | PASS，无编译警告 |
-| Debug CTest | PASS，1/1 |
-| Release CTest | PASS，1/1 |
-| `--help` | PASS，退出码 0 |
-| `--version` | PASS，退出码 0 |
-| 未知参数 | PASS，退出码 2 |
-| 无参数启动与日志写入 | PASS |
-| Debug PE | PASS，x64 / Windows CUI |
-| Release PE | PASS，x64 / Windows GUI |
-| Phase 0 任务栏 API 安全扫描 | PASS，未发现任务栏修改 API |
-
-Phase 0 不涉及任务栏视觉变化，因此不需要用户手动验收。
-
-## Phase 1：Chrome 窗口诊断
-
-`--list` 会枚举系统顶层窗口，使用进程完整路径确认 `chrome.exe`，并集中评估：
-
-- 是否为顶层、可见窗口；
-- 标题和窗口类是否有效；
-- 类名是否兼容 `Chrome_WidgetWin_*`；
-- 是否带有 `WS_CHILD`、`WS_EX_TOOLWINDOW` 或 `WS_EX_NOACTIVATE`；
-- HWND、PID、TID、Owner、普通样式、扩展样式和 DWM cloaked 状态。
-
-输出会同时列出 `MANAGEABLE` 和 `EXCLUDED` Chrome 候选，并为被排除窗口打印具体原因。窗口标题不参与 `chrome.exe` 身份判断。
-
-2026-07-15 自动诊断快照：
-
-```text
-Scanned top-level windows: 480
-Process-query failures: 0
-Chrome candidates: 13
-Manageable: 2; Excluded: 11
-```
-
-自动检查结果：Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过，Debug 与 Release 的 `--list` 均返回退出码 `0`，UTF-8 日志包含完整窗口诊断信息。
-
-真实窗口人工对照结果：用户打开了 3 个 Chrome 主窗口，`--list` 恰好输出 3 个 `MANAGEABLE`；其余 12 个 Chrome 候选均为不可见的工具、状态托盘、电源消息、Crashpad 或 IME 辅助窗口，没有漏报或误报。Phase 1 验收通过。
-
-原始人工测试输出可能包含窗口标题、HWND 和 PID，仅保留在本地 `result.txt`，不纳入 Git 或未来 remote。
+`dist/` 是可重复生成的本地交付目录，已在 `.gitignore` 中忽略；未来推送 remote 时提交源代码、配置模板和打包脚本即可，ZIP 可作为发布附件上传。

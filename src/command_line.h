@@ -11,6 +11,7 @@ enum class Command {
     ListWindows,
     Experiment,
     Manage,
+    RestoreAll,
     ShowHelp,
     ShowVersion,
     Invalid,

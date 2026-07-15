@@ -6,6 +6,7 @@
 - `FAIL`：已经执行但不符合预期；
 - `BLOCKED`：环境不足或等待人工观察；
 - `NOT RUN`：尚未进入对应 Phase。
+- `AUTOMATIC PASS / MANUAL PENDING`：实现和可自动验证项目通过，仍等待真实桌面观察。
 
 ## Phase 0：工程骨架
 
@@ -424,14 +425,133 @@ q 后恢复的入口数；退出码：
 
 PowerShell 退出码未被用户捕获，但日志明确记录正常退出恢复成功，程序正常结束，且用户确认全部按钮已恢复，因此不阻塞验收。
 
-当前状态：`PASS`。Phase 4 验收完成，Phase 5 允许开始。
+当前状态：`PASS`。Phase 4 验收完成；Phase 5/6 已按用户要求合并开发。
 
-## 后续 Phase
+## Phase 5/6：恢复、托盘和便携发布（合并验收）
+
+用户于 2026-07-15 要求 Phase 5 和 Phase 6 一次性开发，完成后再执行一次合并人工验收。人工验收通过前，产物版本为 `1.0.0-rc1`，不标记为最终 V1。
+
+### 自动验收项目
+
+| 项目 | 预期结果 | 实际结果 | 状态 |
+| --- | --- | --- | --- |
+| Debug/Release 增量构建 | 无编译、链接错误或警告 | 两种配置均成功，无警告 | PASS |
+| Debug/Release CTest | 所有测试通过 | 两种配置均 4/4 通过 | PASS |
+| 全新便携构建 | 独立构建树完成两种配置和测试 | `scripts/build-portable.ps1` 成功 | PASS |
+| 配置解析 | 缺失使用默认值；合法值生效；非法值安全回退 | 单元测试覆盖 2000、1250 和越界值 | PASS |
+| 恢复日志往返 | 身份及恢复义务完整保存 | 串行化、文件保存、加载和清空通过 | PASS |
+| 损坏恢复日志 | 损坏、截断、重复记录整体拒绝 | 未采用任何部分记录 | PASS |
+| 写前保护 | 恢复状态无法持久化时不得调用 `DeleteTab` | 伪控制器确认调用次数为 0 | PASS |
+| 陈旧 HWND 防护 | PID/TID/创建时间/类名不匹配时不修改新窗口 | 进程创建时间不匹配路径安全跳过 | PASS |
+| 恢复幂等性 | 重复恢复不产生额外修改或失败 | 核心和固定入口测试通过 | PASS |
+| TaskbarCreated 状态重建 | 忘记旧 Shell 状态并重新应用规则 | 伪控制器恢复义务清空并重新 `DeleteTab` | PASS |
+| 单实例互斥体 | 第一实例为主实例，第二实例识别已有实例 | 命名互斥体创建、检测、释放测试通过 | PASS |
+| 实例通知消息 | 同步恢复和异步扫描消息可到达首实例 | Win32 消息窗口测试均通过 | PASS |
+| Release 命令回归 | `--version`、`--help`、`--list`、未知参数退出正确 | 退出码分别为 0、0、0、2 | PASS |
+| 日志失败路径 | 日志目录不可创建时不崩溃 | `LOCALAPPDATA` 指向普通文件时 `--version` 仍返回 0 | PASS |
+| Release PE | x64、Windows GUI、版本资源正确 | machine 8664、subsystem 2、`1.0.0-rc1` | PASS |
+| 运行库依赖 | 便携 EXE 不依赖 MSVC 动态运行库 | 导入表无 VCRUNTIME/MSVCP | PASS |
+| 交付文件 | EXE、INI、README、LICENSE 和 ZIP 齐全 | `dist` 目录及 ZIP 已生成 | PASS |
+
+自动验收没有启动无参数托盘实例，也没有对真实 Chrome 执行 `--restore-all`，因为这两项会改变用户当前任务栏，必须结合视觉观察人工执行。
+
+本次待验收产物指纹：
+
+```text
+EXE SHA-256: 14530A465832F48056EC740F19DA3D99B1EDC743D50BC42910FD09007A374C95
+ZIP SHA-256: C5B6616973041657C5A0E8EA712464866FF904AA99DBEC486FAE39EA0C117669
+```
+
+当前状态：`AUTOMATIC PASS / MANUAL PENDING`。
+
+### 合并人工验收前置条件
+
+1. WindowTabs 正在运行；
+2. 打开 3 个普通 Chrome 主窗口，每个窗口打开一个非关键网页；
+3. 结束旧的 Debug `--manage` 会话，并确认任务管理器中没有 `ChromeTaskbarMerger.exe`；
+4. 从仓库根目录操作，使用 `dist\ChromeTaskbarMerger\ChromeTaskbarMerger.exe`；
+5. 如果任何步骤出现窗口无法到达、按钮无法恢复或与预期不符，立即停止后续步骤并保留日志。
+
+### 人工验收步骤
+
+#### A. 托盘、单入口和菜单
+
+1. 双击便携版 `ChromeTaskbarMerger.exe`；
+2. 确认没有普通主窗口或控制台，通知区域出现图标；
+3. 等待不超过 3 秒，确认三个 Chrome 窗口仍可由 WindowTabs 操作，任务栏只剩一个 Chrome 入口；
+4. 右键图标选择“立即重新扫描”，确认仍只有一个入口；
+5. 选择“暂停管理”，确认三个 Chrome 入口全部恢复；等待至少 3 秒，确认不会重新隐藏；
+6. 选择“恢复管理”，确认不超过 3 秒再次收敛为一个入口；
+7. 选择“打开日志目录”，确认资源管理器打开 `%LOCALAPPDATA%\ChromeTaskbarMerger\logs`。
+
+#### B. 第二实例
+
+1. 保持首实例运行，再次双击同一个 EXE；
+2. 在 PowerShell 执行：
+
+   ```powershell
+   @(Get-Process ChromeTaskbarMerger -ErrorAction SilentlyContinue).Count
+   ```
+
+3. 预期结果为 `1`；首实例显示已有实例/重新扫描提示，任务栏仍只有一个 Chrome 入口；
+4. 日志应出现 `Second-instance synchronization` 或相应只读扫描记录。
+
+#### C. Explorer 重建
+
+1. 管理启用且任务栏为一个 Chrome 入口时，在任务管理器中对“Windows 资源管理器”选择“重新启动”；
+2. 等待桌面和任务栏恢复；通知区域图标应重新出现；
+3. 等待不超过一个配置扫描周期加 3 秒，确认任务栏重新收敛为一个 Chrome 入口；
+4. 日志应包含 `TaskbarCreated received` 和后续成功同步。
+
+#### D. 强制结束和持久恢复
+
+1. 管理启用且任务栏为一个 Chrome 入口时，在任务管理器中强制结束 `ChromeTaskbarMerger.exe`；
+2. 不关闭三个 Chrome 窗口；重新双击 EXE；
+3. 程序应先处理上次恢复记录，再继续管理，最终在不超过 5 秒内保持一个入口；允许启动瞬间短暂出现多个按钮；
+4. Chrome 窗口不得被关闭或变得无法通过 WindowTabs 到达；
+5. 日志应包含 `Startup persisted-state restoration: SUCCESS`，随后为成功的 `Startup synchronization`，且没有恢复遗留。
+
+#### E. 显式恢复命令和退出
+
+1. 保持托盘实例运行并处于一个 Chrome 入口状态；
+2. 在仓库根目录执行：
+
+   ```powershell
+   $process = Start-Process `
+       -FilePath .\dist\ChromeTaskbarMerger\ChromeTaskbarMerger.exe `
+       -ArgumentList '--restore-all' `
+       -Wait -PassThru
+   $process.ExitCode
+   ```
+
+3. 预期退出码为 `0`，三个 Chrome 入口全部恢复，首实例保持“已暂停”；等待至少 3 秒后仍保持三个入口；
+4. 从托盘选择“恢复管理”，确认再次收敛为一个入口；
+5. 从托盘选择“退出”，确认程序进程消失、三个 Chrome 入口全部恢复；
+6. 阅读便携 README 的恢复和卸载步骤，确认描述与刚才的实际行为一致。无需在验收时真的删除仓库内 `dist` 目录。
+
+### 失败时的安全恢复
+
+先运行上面的 `--restore-all` 命令。如果退出码不是 `0` 或按钮仍不完整，在任务管理器中重启“Windows 资源管理器”，再运行一次恢复命令。保留以下日志，不要删除 `recovery-v1.tsv`：
+
+```text
+%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log
+%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv
+```
+
+人工步骤全部完成后，可把日志复制到仓库根目录，供 Codex 分析：
+
+```powershell
+Copy-Item `
+    "$env:LOCALAPPDATA\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log" `
+    .\phase56-validation.txt
+```
+
+### 阶段总表
 
 | Phase | 主要人工观察内容 | 当前状态 |
 | --- | --- | --- |
 | Phase 2 | 任务栏按钮是否真实移除和恢复 | PASS：采用方法 A |
 | Phase 3 | 多窗口时是否只保留一个入口 | PASS |
 | Phase 4 | 新建、关闭窗口后的自动同步 | PASS |
-| Phase 5 | Explorer 重启、异常恢复和单实例 | NOT RUN |
-| Phase 6 | 托盘菜单和 Release 使用体验 | NOT RUN |
+| Phase 5 | Explorer 重启、异常恢复和单实例 | AUTOMATIC PASS / MANUAL PENDING |
+| Phase 6 | 托盘菜单和 Release 便携体验 | AUTOMATIC PASS / MANUAL PENDING |

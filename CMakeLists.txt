@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     ChromeTaskbarMerger
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Keep a single Chrome entry on the Windows taskbar"
     LANGUAGES CXX
 )
@@ -15,9 +15,22 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    set(
+        CMAKE_MSVC_RUNTIME_LIBRARY
+        "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/ctm/version.h"
+    @ONLY
+)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app.rc"
     @ONLY
 )
 
@@ -46,6 +59,10 @@ add_library(
     STATIC
         src/chrome_window.cpp
         src/chrome_window.h
+        src/app_config.cpp
+        src/app_config.h
+        src/app_paths.cpp
+        src/app_paths.h
         src/command_line.cpp
         src/command_line.h
         src/fixed_entry_app.cpp
@@ -54,12 +71,24 @@ add_library(
         src/fixed_entry_manager.h
         src/logger.cpp
         src/logger.h
+        src/process_identity.cpp
+        src/process_identity.h
+        src/recovery_journal.cpp
+        src/recovery_journal.h
+        src/restore_command.cpp
+        src/restore_command.h
         src/scan_schedule.cpp
         src/scan_schedule.h
+        src/single_instance.cpp
+        src/single_instance.h
         src/taskbar_controller.cpp
         src/taskbar_controller.h
         src/taskbar_experiment.cpp
         src/taskbar_experiment.h
+        src/tray_app.cpp
+        src/tray_app.h
+        src/windowtabs_presence.cpp
+        src/windowtabs_presence.h
 )
 
 target_compile_features(ctm_core PUBLIC cxx_std_20)
@@ -83,6 +112,7 @@ target_link_libraries(ctm_core PUBLIC Dwmapi Ole32)
 add_executable(
     ChromeTaskbarMerger
     src/main.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app.rc"
 )
 
 target_link_libraries(
@@ -97,6 +127,22 @@ set_target_properties(
         WIN32_EXECUTABLE "$<CONFIG:Release>"
 )
 ctm_enable_warnings(ChromeTaskbarMerger)
+
+install(
+    TARGETS ChromeTaskbarMerger
+    RUNTIME DESTINATION .
+)
+install(
+    FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/ChromeTaskbarMerger.ini"
+        "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    DESTINATION .
+)
+install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/PORTABLE_README.md"
+    DESTINATION .
+    RENAME README.md
+)
 
 include(CTest)
 if(BUILD_TESTING)

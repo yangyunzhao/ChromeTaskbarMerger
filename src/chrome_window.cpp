@@ -1,5 +1,7 @@
 #include "chrome_window.h"
 
+#include "process_identity.h"
+
 #include <dwmapi.h>
 
 #include <algorithm>
@@ -143,6 +145,11 @@ struct EnumerationContext {
     snapshot.process_path =
         QueryProcessPath(snapshot.process_id, &snapshot.process_query_error);
     snapshot.process_path_available = !snapshot.process_path.empty();
+    const ProcessCreationTimeResult creation_time =
+        QueryProcessCreationTime(snapshot.process_id);
+    snapshot.process_creation_time = creation_time.value;
+    snapshot.process_creation_time_available = creation_time.succeeded;
+    snapshot.process_creation_time_error = creation_time.error_code;
     snapshot.title = QueryWindowTitle(hwnd);
 
     auto [class_name, class_available] = QueryWindowClass(hwnd);
@@ -243,6 +250,9 @@ ChromeWindowAssessment EvaluateChromeWindow(
     }
 
     assessment.chrome_process = true;
+    if (!snapshot.process_creation_time_available) {
+        exclude(WindowExclusionReason::ProcessCreationTimeUnavailable);
+    }
     if (!snapshot.top_level) {
         exclude(WindowExclusionReason::NotTopLevel);
     }
@@ -317,6 +327,8 @@ std::wstring_view WindowExclusionReasonText(
     switch (reason) {
         case WindowExclusionReason::ProcessPathUnavailable:
             return L"process path unavailable";
+        case WindowExclusionReason::ProcessCreationTimeUnavailable:
+            return L"process creation time unavailable";
         case WindowExclusionReason::NotChromeExecutable:
             return L"process executable is not chrome.exe";
         case WindowExclusionReason::NotTopLevel:
@@ -354,6 +366,14 @@ std::wstring FormatChromeWindowRecord(const ChromeWindowRecord& record,
            << L"  HWND: " << FormatHandle(snapshot.hwnd) << L'\n'
            << L"  PID/TID: " << snapshot.process_id << L'/'
            << snapshot.thread_id << L'\n'
+           << L"  Process creation time: ";
+    if (snapshot.process_creation_time_available) {
+        output << snapshot.process_creation_time;
+    } else {
+        output << L"unavailable (Win32 "
+               << snapshot.process_creation_time_error << L')';
+    }
+    output << L'\n'
            << L"  Process: " << SanitizeSingleLine(snapshot.process_path)
            << L'\n'
            << L"  Title: " << SanitizeSingleLine(snapshot.title) << L'\n'

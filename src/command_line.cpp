@@ -36,6 +36,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::Manage};
     }
 
+    if (option == L"--restore-all") {
+        return {.command = Command::RestoreAll};
+    }
+
     return {
         .command = Command::Invalid,
         .error_message = L"Unknown option: " + std::wstring(option),

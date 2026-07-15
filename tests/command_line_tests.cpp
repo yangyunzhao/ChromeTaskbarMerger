@@ -1,5 +1,6 @@
 #include "chrome_window.h"
 #include "command_line.h"
+#include "process_identity.h"
 #include "taskbar_controller.h"
 
 #include <algorithm>
@@ -84,6 +85,15 @@ void TestManageOption() {
            "--manage should not produce an error");
 }
 
+void TestRestoreAllOption() {
+    constexpr std::array arguments = {std::wstring_view(L"--restore-all")};
+    const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
+    Expect(result.command == ctm::Command::RestoreAll,
+           "--restore-all should select the explicit recovery command");
+    Expect(result.error_message.empty(),
+           "--restore-all should not produce an error");
+}
+
 void TestUnknownOption() {
     constexpr std::array arguments = {std::wstring_view(L"--unknown")};
     const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
@@ -109,6 +119,7 @@ void TestMultipleOptions() {
     ctm::ChromeWindowSnapshot snapshot;
     snapshot.process_id = 42;
     snapshot.thread_id = 84;
+    snapshot.process_creation_time = 123456789;
     snapshot.process_path =
         L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
     snapshot.title = L"Example - Google Chrome";
@@ -116,6 +127,7 @@ void TestMultipleOptions() {
     snapshot.style = WS_OVERLAPPEDWINDOW;
     snapshot.extended_style = 0;
     snapshot.process_path_available = true;
+    snapshot.process_creation_time_available = true;
     snapshot.class_name_available = true;
     snapshot.style_available = true;
     snapshot.extended_style_available = true;
@@ -314,16 +326,20 @@ void TestWindowIdentityMatching() {
     ctm::WindowIdentity identity;
     identity.process_id = 10;
     identity.thread_id = 20;
+    identity.process_creation_time = 30;
     identity.class_name = L"Chrome_WidgetWin_1";
     Expect(ctm::WindowIdentityValuesMatch(
-               identity, 10, 20, L"Chrome_WidgetWin_1"),
+               identity, 10, 20, 30, L"Chrome_WidgetWin_1"),
            "matching PID, TID, and class should preserve window identity");
     Expect(!ctm::WindowIdentityValuesMatch(
-               identity, 11, 20, L"Chrome_WidgetWin_1"),
+               identity, 11, 20, 30, L"Chrome_WidgetWin_1"),
            "a changed PID should reject a possibly reused HWND");
     Expect(!ctm::WindowIdentityValuesMatch(
-               identity, 10, 20, L"OtherClass"),
+               identity, 10, 20, 30, L"OtherClass"),
            "a changed class should reject a possibly reused HWND");
+    Expect(!ctm::WindowIdentityValuesMatch(
+               identity, 10, 20, 31, L"Chrome_WidgetWin_1"),
+           "a changed process creation time should reject a reused PID");
 }
 
 void TestRestoreWithoutModificationIsSafeAndIdempotent() {
@@ -372,6 +388,9 @@ struct ScopedTestWindow {
     snapshot.hwnd = hwnd;
     snapshot.thread_id =
         GetWindowThreadProcessId(hwnd, &snapshot.process_id);
+    const ctm::ProcessCreationTimeResult creation_time =
+        ctm::QueryProcessCreationTime(snapshot.process_id);
+    snapshot.process_creation_time = creation_time.value;
 
     std::array<wchar_t, 256> class_name{};
     const int copied = GetClassNameW(
@@ -488,6 +507,8 @@ void TestRestoreSkipsAChangedWindowIdentity() {
     state.identity.hwnd = window.hwnd;
     state.identity.process_id = GetCurrentProcessId() + 1;
     state.identity.thread_id = GetCurrentThreadId();
+    state.identity.process_creation_time =
+        ctm::QueryProcessCreationTime(GetCurrentProcessId()).value;
     state.identity.class_name = L"STATIC";
     state.original_extended_style = 0;
     state.modification_applied = true;
@@ -501,6 +522,50 @@ void TestRestoreSkipsAChangedWindowIdentity() {
            "a rejected reused HWND should resolve the stale restore state");
     Expect(ReadExtendedStyleForTest(window.hwnd) == style_before,
            "a changed window identity should never receive a saved style");
+}
+
+void TestRestoreSkipsAChangedProcessCreationTime() {
+    ScopedTestWindow window;
+    window.hwnd = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        L"STATIC",
+        L"ChromeTaskbarMerger process creation identity test",
+        WS_OVERLAPPED,
+        0,
+        0,
+        100,
+        100,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr);
+    Expect(window.hwnd != nullptr,
+           "a synthetic process-creation identity window should be created");
+    if (window.hwnd == nullptr) {
+        return;
+    }
+
+    ctm::TaskbarMutationState state;
+    state.method = ctm::TaskbarMethod::WindowStyle;
+    state.identity.hwnd = window.hwnd;
+    state.identity.thread_id = GetWindowThreadProcessId(
+        window.hwnd, &state.identity.process_id);
+    state.identity.process_creation_time =
+        ctm::QueryProcessCreationTime(state.identity.process_id).value + 1;
+    state.identity.class_name = L"STATIC";
+    state.original_extended_style = 0;
+    state.modification_applied = true;
+
+    const LONG_PTR style_before = ReadExtendedStyleForTest(window.hwnd);
+    ctm::TaskbarController controller;
+    const ctm::TaskbarOperationResult restoration =
+        controller.RestoreWindow(&state);
+    Expect(restoration.succeeded && restoration.skipped,
+           "a changed process creation time should skip stale recovery");
+    Expect(!state.NeedsRestore(),
+           "a stale process creation identity should be resolved safely");
+    Expect(ReadExtendedStyleForTest(window.hwnd) == style_before,
+           "stale process creation state must not modify the current window");
 }
 
 void TestTaskbarListCanInitializeWithoutMutation() {
@@ -521,6 +586,7 @@ int main() {
     TestListOption();
     TestExperimentOption();
     TestManageOption();
+    TestRestoreAllOption();
     TestUnknownOption();
     TestMultipleOptions();
     TestManageableChromeWindow();
@@ -542,6 +608,7 @@ int main() {
     TestInvalidWindowRemovalIsSafe();
     TestWindowStyleRoundTripUsesOnlyTheSelectedWindow();
     TestRestoreSkipsAChangedWindowIdentity();
+    TestRestoreSkipsAChangedProcessCreationTime();
     TestTaskbarListCanInitializeWithoutMutation();
 
     if (failures != 0) {

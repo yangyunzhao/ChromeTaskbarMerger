@@ -36,6 +36,8 @@ void Expect(const bool condition, const std::string_view description) {
     snapshot.hwnd = TestHandle(handle);
     snapshot.process_id = process_id;
     snapshot.thread_id = thread_id;
+    snapshot.process_creation_time =
+        static_cast<std::uint64_t>(process_id) * 1000U + 1U;
     snapshot.class_name = L"Chrome_WidgetWin_1";
     snapshot.title = L"Synthetic Chrome window";
     return snapshot;
@@ -45,6 +47,30 @@ struct FakeCall {
     ctm::FixedEntryOperationKind kind =
         ctm::FixedEntryOperationKind::Remove;
     ctm::WindowIdentity identity;
+};
+
+class RecordingRecoveryStore final : public ctm::IRecoveryStateStore {
+public:
+    [[nodiscard]] bool Save(
+        const std::span<const ctm::TaskbarMutationState> states,
+        std::wstring* const error_message) override {
+        ++save_attempts;
+        if (fail_on_attempt != 0 && save_attempts == fail_on_attempt) {
+            if (error_message != nullptr) {
+                *error_message = L"Configured recovery-store failure.";
+            }
+            return false;
+        }
+        saved_states.emplace_back(states.begin(), states.end());
+        if (error_message != nullptr) {
+            error_message->clear();
+        }
+        return true;
+    }
+
+    int fail_on_attempt = 0;
+    int save_attempts = 0;
+    std::vector<std::vector<ctm::TaskbarMutationState>> saved_states;
 };
 
 class FakeTaskbarController final
@@ -65,6 +91,7 @@ public:
             .hwnd = snapshot.hwnd,
             .process_id = snapshot.process_id,
             .thread_id = snapshot.thread_id,
+            .process_creation_time = snapshot.process_creation_time,
             .class_name = snapshot.class_name,
         };
         calls.push_back({
@@ -530,6 +557,114 @@ void TestTransitionToZeroWindowsRestoresTrackedEntries() {
            "transitioning to zero windows should restore both changed entries");
 }
 
+void TestRecoveryWriteAheadPrecedesEveryRemoval() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    ctm::FixedEntryManager manager(&controller, &store);
+    const std::vector windows = {
+        MakeWindow(1),
+        MakeWindow(2),
+        MakeWindow(3),
+    };
+
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(report.succeeded,
+           "persistent management should synchronize successfully");
+    Expect(store.saved_states.size() == 4,
+           "two removals should each write an intent and final state");
+    if (store.saved_states.size() == 4) {
+        Expect(store.saved_states[0].size() == 1 &&
+                   store.saved_states[1].size() == 1 &&
+                   store.saved_states[2].size() == 2 &&
+                   store.saved_states[3].size() == 2,
+               "recovery records should exist before and after each removal");
+    }
+
+    const ctm::FixedEntryReport restored = manager.RestoreAll();
+    Expect(restored.succeeded && manager.removed_window_count() == 0,
+           "persistent tracked entries should restore successfully");
+    Expect(!store.saved_states.empty() && store.saved_states.back().empty(),
+           "successful restoration should persist an empty journal");
+}
+
+void TestRecoveryWriteAheadFailureBlocksTaskbarMutation() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    store.fail_on_attempt = 1;
+    ctm::FixedEntryManager manager(&controller, &store);
+    const std::vector windows = {
+        MakeWindow(1),
+        MakeWindow(2),
+    };
+
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(!report.succeeded && !report.persistence_error.empty(),
+           "a write-ahead failure should fail synchronization clearly");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 0,
+           "DeleteTab must not run without a durable recovery intent");
+    Expect(manager.removed_window_count() == 0,
+           "a blocked removal should leave no in-memory obligation");
+}
+
+void TestTaskbarRecreationForgetsShellStateAndReapplies() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    ctm::FixedEntryManager manager(&controller, &store);
+    const std::vector windows = {
+        MakeWindow(1),
+        MakeWindow(2),
+        MakeWindow(3),
+    };
+    static_cast<void>(manager.Synchronize(windows, TestHandle(1)));
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 2,
+           "initial synchronization should remove two entries");
+
+    std::wstring reset_error;
+    Expect(manager.ResetAfterTaskbarRecreation(&reset_error),
+           "TaskbarCreated should clear obsolete shell state durably");
+    Expect(manager.removed_window_count() == 0 &&
+               !store.saved_states.empty() &&
+               store.saved_states.back().empty(),
+           "TaskbarCreated should leave no obsolete recovery entries");
+
+    const ctm::FixedEntryReport reapplied =
+        manager.Synchronize(windows, TestHandle(3));
+    Expect(reapplied.succeeded,
+           "synchronization should reapply after TaskbarCreated");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 4,
+           "both non-main entries should be removed again after shell rebuild");
+    static_cast<void>(manager.RestoreAll());
+}
+
+void TestPersistedRecoveryStatesCanBeAdoptedAndRestored() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    ctm::FixedEntryManager manager(&controller, &store);
+    ctm::TaskbarMutationState state;
+    state.method = ctm::TaskbarMethod::TaskbarList;
+    state.identity = {
+        .hwnd = TestHandle(9),
+        .process_id = 900,
+        .thread_id = 901,
+        .process_creation_time = 902,
+        .class_name = L"Chrome_WidgetWin_1",
+    };
+    state.modification_applied = true;
+
+    std::wstring adopt_error;
+    Expect(manager.AdoptRecoveryStates({state}, &adopt_error),
+           "a complete persisted state should be adopted");
+    const ctm::FixedEntryReport report = manager.RestoreAll();
+    Expect(report.succeeded && manager.removed_window_count() == 0,
+           "an adopted state should restore and clear");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Restore, 9) == 1,
+           "an adopted state should invoke one exact restoration");
+    Expect(!store.saved_states.empty() && store.saved_states.back().empty(),
+           "restoring adopted state should clear the persisted journal");
+}
+
 }  // namespace
 
 int main() {
@@ -546,6 +681,10 @@ int main() {
     TestFailedRestorationRemainsTrackedAndRetries();
     TestReconciliationFailureBlocksNewRemovals();
     TestTransitionToZeroWindowsRestoresTrackedEntries();
+    TestRecoveryWriteAheadPrecedesEveryRemoval();
+    TestRecoveryWriteAheadFailureBlocksTaskbarMutation();
+    TestTaskbarRecreationForgetsShellStateAndReapplies();
+    TestPersistedRecoveryStatesCanBeAdoptedAndRestored();
 
     if (failures != 0) {
         std::cerr << failures << " fixed-entry test(s) failed.\n";

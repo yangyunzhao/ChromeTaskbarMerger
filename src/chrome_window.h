@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@ namespace ctm {
 
 enum class WindowExclusionReason {
     ProcessPathUnavailable,
+    ProcessCreationTimeUnavailable,
     NotChromeExecutable,
     NotTopLevel,
     NotVisible,
@@ -28,6 +30,7 @@ struct ChromeWindowSnapshot {
     HWND hwnd = nullptr;
     DWORD process_id = 0;
     DWORD thread_id = 0;
+    std::uint64_t process_creation_time = 0;
     std::wstring process_path;
     std::wstring title;
     std::wstring class_name;
@@ -35,7 +38,9 @@ struct ChromeWindowSnapshot {
     LONG_PTR style = 0;
     LONG_PTR extended_style = 0;
     DWORD process_query_error = ERROR_SUCCESS;
+    DWORD process_creation_time_error = ERROR_SUCCESS;
     bool process_path_available = false;
+    bool process_creation_time_available = false;
     bool class_name_available = false;
     bool style_available = false;
     bool extended_style_available = false;

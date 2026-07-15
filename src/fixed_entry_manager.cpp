@@ -13,6 +13,7 @@ namespace {
         .hwnd = snapshot.hwnd,
         .process_id = snapshot.process_id,
         .thread_id = snapshot.thread_id,
+        .process_creation_time = snapshot.process_creation_time,
         .class_name = snapshot.class_name,
     };
 }
@@ -25,6 +26,7 @@ namespace {
                identity,
                snapshot.process_id,
                snapshot.thread_id,
+               snapshot.process_creation_time,
                snapshot.class_name);
 }
 
@@ -120,13 +122,16 @@ FixedEntryReport FixedEntryManager::Synchronize(
               *previous_main,
               main_entry_->process_id,
               main_entry_->thread_id,
+              main_entry_->process_creation_time,
               main_entry_->class_name)));
 
+    bool recovery_state_changed = false;
     std::size_t index = 0;
     while (index < removed_windows_.size()) {
         TaskbarMutationState& state = removed_windows_[index];
         if (!state.NeedsRestore()) {
             removed_windows_.erase(removed_windows_.begin() + index);
+            recovery_state_changed = true;
             continue;
         }
 
@@ -149,6 +154,7 @@ FixedEntryReport FixedEntryManager::Synchronize(
         });
         if (result.succeeded && !state.NeedsRestore()) {
             removed_windows_.erase(removed_windows_.begin() + index);
+            recovery_state_changed = true;
             continue;
         }
 
@@ -156,9 +162,19 @@ FixedEntryReport FixedEntryManager::Synchronize(
         ++index;
     }
 
+    if (recovery_state_changed) {
+        std::wstring persistence_error;
+        if (!PersistRecoveryState(&persistence_error)) {
+            report.succeeded = false;
+            report.persistence_error = std::move(persistence_error);
+        }
+    }
+
     if (!report.succeeded) {
         report.message =
-            L"Restoration reconciliation failed; no new windows were removed.";
+            report.persistence_error.empty()
+                ? L"Restoration reconciliation failed; no new windows were removed."
+                : L"Recovery state persistence failed; no new windows were removed.";
         return report;
     }
 
@@ -178,6 +194,29 @@ FixedEntryReport FixedEntryManager::Synchronize(
             continue;
         }
 
+        TaskbarMutationState planned_state;
+        planned_state.method = TaskbarMethod::TaskbarList;
+        planned_state.identity = MakeIdentity(snapshot);
+        planned_state.modification_applied = true;
+        removed_windows_.push_back(planned_state);
+
+        std::wstring write_ahead_error;
+        if (!PersistRecoveryState(&write_ahead_error)) {
+            removed_windows_.pop_back();
+            TaskbarOperationResult blocked;
+            blocked.win32_error = ERROR_WRITE_FAULT;
+            blocked.message =
+                L"The recovery write-ahead failed; DeleteTab was not called.";
+            report.operations.push_back({
+                .kind = FixedEntryOperationKind::Remove,
+                .identity = planned_state.identity,
+                .result = std::move(blocked),
+            });
+            report.succeeded = false;
+            report.persistence_error = std::move(write_ahead_error);
+            break;
+        }
+
         TaskbarMutationState state;
         TaskbarOperationResult result = controller_->RemoveWindow(
             snapshot, TaskbarMethod::TaskbarList, &state);
@@ -192,16 +231,30 @@ FixedEntryReport FixedEntryManager::Synchronize(
 
         const bool restoration_required = state.NeedsRestore();
         if (restoration_required) {
-            removed_windows_.push_back(std::move(state));
+            removed_windows_.back() = std::move(state);
+        } else {
+            removed_windows_.pop_back();
+        }
+
+        std::wstring persistence_error;
+        if (!PersistRecoveryState(&persistence_error)) {
+            report.succeeded = false;
+            report.persistence_error = std::move(persistence_error);
+            break;
         }
         if (!result.succeeded || !restoration_required) {
             report.succeeded = false;
         }
     }
 
-    report.message = report.succeeded
-                         ? L"The fixed taskbar entry is synchronized."
-                         : L"One or more taskbar removals failed.";
+    if (report.succeeded) {
+        report.message = L"The fixed taskbar entry is synchronized.";
+    } else if (!report.persistence_error.empty()) {
+        report.message =
+            L"Recovery state persistence failed; management must pause.";
+    } else {
+        report.message = L"One or more taskbar removals failed.";
+    }
     return report;
 }
 
@@ -215,11 +268,13 @@ FixedEntryReport FixedEntryManager::RestoreAll() {
         return report;
     }
 
+    bool recovery_state_changed = false;
     std::size_t index = 0;
     while (index < removed_windows_.size()) {
         TaskbarMutationState& state = removed_windows_[index];
         if (!state.NeedsRestore()) {
             removed_windows_.erase(removed_windows_.begin() + index);
+            recovery_state_changed = true;
             continue;
         }
 
@@ -232,6 +287,7 @@ FixedEntryReport FixedEntryManager::RestoreAll() {
         });
         if (result.succeeded && !state.NeedsRestore()) {
             removed_windows_.erase(removed_windows_.begin() + index);
+            recovery_state_changed = true;
             continue;
         }
 
@@ -239,10 +295,68 @@ FixedEntryReport FixedEntryManager::RestoreAll() {
         ++index;
     }
 
-    report.message = report.succeeded
-                         ? L"All taskbar entries changed by this session were restored."
-                         : L"One or more taskbar entries still need restoration.";
+    if (recovery_state_changed) {
+        std::wstring persistence_error;
+        if (!PersistRecoveryState(&persistence_error)) {
+            report.succeeded = false;
+            report.persistence_error = std::move(persistence_error);
+        }
+    }
+
+    if (report.succeeded) {
+        report.message =
+            L"All taskbar entries changed by this session were restored.";
+    } else if (!report.persistence_error.empty()) {
+        report.message =
+            L"Taskbar entries were processed, but recovery state could not be saved.";
+    } else {
+        report.message = L"One or more taskbar entries still need restoration.";
+    }
     return report;
+}
+
+bool FixedEntryManager::AdoptRecoveryStates(
+    std::vector<TaskbarMutationState> states,
+    std::wstring* const error_message) {
+    if (!removed_windows_.empty()) {
+        if (error_message != nullptr) {
+            *error_message = L"In-memory recovery state is not empty.";
+        }
+        return false;
+    }
+    for (const TaskbarMutationState& state : states) {
+        if (!state.NeedsRestore() || state.identity.hwnd == nullptr ||
+            state.identity.process_id == 0 || state.identity.thread_id == 0 ||
+            state.identity.process_creation_time == 0 ||
+            state.identity.class_name.empty()) {
+            if (error_message != nullptr) {
+                *error_message = L"A persisted recovery record is incomplete.";
+            }
+            return false;
+        }
+    }
+    removed_windows_ = std::move(states);
+    if (error_message != nullptr) {
+        error_message->clear();
+    }
+    return true;
+}
+
+bool FixedEntryManager::ResetAfterTaskbarRecreation(
+    std::wstring* const error_message) {
+    removed_windows_.clear();
+    return PersistRecoveryState(error_message);
+}
+
+bool FixedEntryManager::PersistRecoveryState(
+    std::wstring* const error_message) {
+    if (recovery_store_ == nullptr) {
+        if (error_message != nullptr) {
+            error_message->clear();
+        }
+        return true;
+    }
+    return recovery_store_->Save(removed_windows_, error_message);
 }
 
 }  // namespace ctm

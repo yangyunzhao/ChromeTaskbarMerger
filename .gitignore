@@ -2,6 +2,7 @@
 /build/
 /build-*/
 /cmake-build-*/
+/dist/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -45,6 +46,9 @@ logs/
 /phase2-*.txt
 /phase3-*.txt
 /phase4-*.txt
+/phase5-*.txt
+/phase6-*.txt
+/phase56-*.txt
 
 # Local editor and operating-system files
 .idea/

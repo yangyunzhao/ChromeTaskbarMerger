@@ -1,5 +1,6 @@
 #pragma once
 
+#include "recovery_journal.h"
 #include "taskbar_controller.h"
 
 #include <cstddef>
@@ -28,13 +29,16 @@ struct FixedEntryReport {
     bool main_entry_changed = false;
     std::size_t already_removed_count = 0;
     std::vector<FixedEntryOperation> operations;
+    std::wstring persistence_error;
     std::wstring message;
 };
 
 class FixedEntryManager final {
 public:
-    explicit FixedEntryManager(ITaskbarMutationController* controller)
-        : controller_(controller) {}
+    explicit FixedEntryManager(
+        ITaskbarMutationController* controller,
+        IRecoveryStateStore* recovery_store = nullptr)
+        : controller_(controller), recovery_store_(recovery_store) {}
 
     FixedEntryManager(const FixedEntryManager&) = delete;
     FixedEntryManager& operator=(const FixedEntryManager&) = delete;
@@ -45,6 +49,11 @@ public:
         std::span<const ChromeWindowSnapshot> windows,
         HWND foreground_window);
     [[nodiscard]] FixedEntryReport RestoreAll();
+    [[nodiscard]] bool AdoptRecoveryStates(
+        std::vector<TaskbarMutationState> states,
+        std::wstring* error_message);
+    [[nodiscard]] bool ResetAfterTaskbarRecreation(
+        std::wstring* error_message);
 
     [[nodiscard]] const std::optional<WindowIdentity>& main_entry()
         const noexcept {
@@ -55,8 +64,16 @@ public:
         return removed_windows_.size();
     }
 
+    [[nodiscard]] std::span<const TaskbarMutationState> removed_windows()
+        const noexcept {
+        return removed_windows_;
+    }
+
 private:
+    [[nodiscard]] bool PersistRecoveryState(std::wstring* error_message);
+
     ITaskbarMutationController* controller_ = nullptr;
+    IRecoveryStateStore* recovery_store_ = nullptr;
     std::optional<WindowIdentity> main_entry_;
     std::vector<TaskbarMutationState> removed_windows_;
     std::size_t last_window_count_ = 0;

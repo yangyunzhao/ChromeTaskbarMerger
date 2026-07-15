@@ -1,16 +1,13 @@
 #pragma once
 
-#include "app_config.h"
-
 #include <filesystem>
 
 namespace ctm {
 
 class Logger;
 
-[[nodiscard]] int RunFixedEntryApplication(
+[[nodiscard]] int RunStandaloneRestoreAll(
     Logger* logger,
-    const AppConfig& config,
     const std::filesystem::path& recovery_journal_path);
 
 }  // namespace ctm

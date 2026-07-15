@@ -128,6 +128,14 @@ void Logger::Info(const std::wstring_view message) {
     Write("INFO", WideToUtf8(message));
 }
 
+void Logger::Warning(const std::string_view message) {
+    Write("WARNING", message);
+}
+
+void Logger::Warning(const std::wstring_view message) {
+    Write("WARNING", WideToUtf8(message));
+}
+
 void Logger::Error(const std::string_view message) {
     Write("ERROR", message);
 }

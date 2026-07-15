@@ -1,5 +1,7 @@
 #include "taskbar_controller.h"
 
+#include "process_identity.h"
+
 #include <array>
 #include <utility>
 
@@ -49,6 +51,14 @@ struct IdentityQueryResult {
         }
         return result;
     }
+
+    const ProcessCreationTimeResult creation_time =
+        QueryProcessCreationTime(result.identity.process_id);
+    if (!creation_time.succeeded) {
+        result.error_code = creation_time.error_code;
+        return result;
+    }
+    result.identity.process_creation_time = creation_time.value;
 
     std::array<wchar_t, 256> class_name{};
     SetLastError(ERROR_SUCCESS);
@@ -147,6 +157,7 @@ struct IdentityQueryResult {
             state->identity,
             current.identity.process_id,
             current.identity.thread_id,
+            current.identity.process_creation_time,
             current.identity.class_name)) {
         state->restore_completed = true;
         result.succeeded = true;
@@ -172,9 +183,11 @@ LONG_PTR CalculateTaskbarHiddenExtendedStyle(
 bool WindowIdentityValuesMatch(const WindowIdentity& expected,
                                const DWORD process_id,
                                const DWORD thread_id,
+                               const std::uint64_t process_creation_time,
                                const std::wstring_view class_name) noexcept {
     return expected.process_id == process_id &&
            expected.thread_id == thread_id &&
+           expected.process_creation_time == process_creation_time &&
            expected.class_name == class_name;
 }
 
@@ -259,6 +272,8 @@ TaskbarOperationResult TaskbarController::RemoveWindow(
     }
     if (snapshot.process_id != current.identity.process_id ||
         snapshot.thread_id != current.identity.thread_id ||
+        snapshot.process_creation_time !=
+            current.identity.process_creation_time ||
         snapshot.class_name != current.identity.class_name) {
         result.win32_error = ERROR_INVALID_WINDOW_HANDLE;
         result.message =
@@ -295,6 +310,43 @@ TaskbarOperationResult TaskbarController::RestoreWindow(
         return RestoreWithTaskbarList(state);
     }
     return RestoreWithWindowStyle(state);
+}
+
+TaskbarOperationResult TaskbarController::ForceRestoreWindow(
+    const ChromeWindowSnapshot& snapshot) {
+    TaskbarOperationResult result;
+    const IdentityQueryResult current = QueryWindowIdentity(snapshot.hwnd);
+    if (!current.succeeded) {
+        result.win32_error = current.error_code;
+        result.message = L"The explicit restore target is no longer valid.";
+        return result;
+    }
+    if (snapshot.process_id != current.identity.process_id ||
+        snapshot.thread_id != current.identity.thread_id ||
+        snapshot.process_creation_time !=
+            current.identity.process_creation_time ||
+        snapshot.class_name != current.identity.class_name) {
+        result.win32_error = ERROR_INVALID_WINDOW_HANDLE;
+        result.message =
+            L"The explicit restore target identity changed after enumeration.";
+        return result;
+    }
+
+    const TaskbarOperationResult initialization = InitializeTaskbarList();
+    if (!initialization.succeeded) {
+        return initialization;
+    }
+
+    const HRESULT add_result = taskbar_list_->AddTab(snapshot.hwnd);
+    result.hresult = add_result;
+    if (FAILED(add_result)) {
+        result.message = L"Explicit ITaskbarList::AddTab failed.";
+        return result;
+    }
+    result.succeeded = true;
+    result.state_changed = true;
+    result.message = L"Explicit AddTab returned success.";
+    return result;
 }
 
 TaskbarOperationResult TaskbarController::RemoveWithTaskbarList(

@@ -48,3 +48,20 @@ add_test(
     NAME scan_schedule
     COMMAND ChromeTaskbarMergerScanScheduleTests
 )
+
+add_executable(
+    ChromeTaskbarMergerRuntimeSupportTests
+    runtime_support_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerRuntimeSupportTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerRuntimeSupportTests)
+
+add_test(
+    NAME runtime_support
+    COMMAND ChromeTaskbarMergerRuntimeSupportTests
+)

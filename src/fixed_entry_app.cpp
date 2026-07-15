@@ -3,16 +3,16 @@
 #include "chrome_window.h"
 #include "fixed_entry_manager.h"
 #include "logger.h"
+#include "recovery_journal.h"
 #include "scan_schedule.h"
 #include "taskbar_controller.h"
+#include "windowtabs_presence.h"
 
 #include <Windows.h>
-#include <TlHelp32.h>
 
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <cwchar>
 #include <cwctype>
 #include <exception>
 #include <iomanip>
@@ -152,45 +152,11 @@ struct ManageableWindowScan {
     std::vector<ChromeWindowSnapshot> windows;
 };
 
-struct ProcessPresenceResult {
-    bool query_succeeded = false;
-    bool running = false;
-    DWORD error_code = ERROR_SUCCESS;
-};
-
 struct ConsoleCommandReadResult {
     bool succeeded = false;
     DWORD error_code = ERROR_SUCCESS;
     std::vector<wchar_t> commands;
 };
-
-[[nodiscard]] ProcessPresenceResult QueryWindowTabsPresence() {
-    ProcessPresenceResult result;
-    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        result.error_code = GetLastError();
-        return result;
-    }
-
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry) == FALSE) {
-        result.error_code = GetLastError();
-        CloseHandle(snapshot);
-        return result;
-    }
-
-    do {
-        if (_wcsicmp(entry.szExeFile, L"WindowTabs.exe") == 0) {
-            result.running = true;
-            break;
-        }
-    } while (Process32NextW(snapshot, &entry) != FALSE);
-
-    CloseHandle(snapshot);
-    result.query_succeeded = true;
-    return result;
-}
 
 [[nodiscard]] bool RequireWindowTabs(Logger* const logger,
                                      const bool log_success) {
@@ -292,7 +258,9 @@ struct ConsoleCommandReadResult {
                       reinterpret_cast<std::uintptr_t>(identity.hwnd)),
                   static_cast<int>(sizeof(HWND) * 2))
            << L", PID/TID=" << identity.process_id << L'/'
-           << identity.thread_id << L", Class=" << identity.class_name;
+           << identity.thread_id
+           << L", Created=" << identity.process_creation_time
+           << L", Class=" << identity.class_name;
     return output.str();
 }
 
@@ -337,6 +305,11 @@ struct ConsoleCommandReadResult {
            << L"  Tracked removals after operation: " << tracked_removals
            << L'\n'
            << L"  Message: " << report.message;
+    if (!report.persistence_error.empty()) {
+        output << L'\n'
+               << L"  Recovery persistence error: "
+               << report.persistence_error;
+    }
     for (const FixedEntryOperation& operation : report.operations) {
         output << L"\n\n" << FormatOperation(operation);
     }
@@ -448,7 +421,8 @@ void WriteReport(Logger* const logger, const std::wstring& report) {
     return report.succeeded && manager->removed_window_count() == 0;
 }
 
-void PrintCommands(const bool management_enabled) {
+void PrintCommands(const bool management_enabled,
+                   const std::chrono::milliseconds scan_interval) {
     std::wcout
         << L"\nCommands are single keys; Enter is not required. Management is "
         << (management_enabled ? L"enabled" : L"paused") << L":\n"
@@ -460,7 +434,8 @@ void PrintCommands(const bool management_enabled) {
         << L"  h  Show these commands\n"
         << L"  q  Restore all and exit\n"
         << (management_enabled
-                ? L"Automatic lifecycle scans run every 2 seconds.\n"
+                ? L"Automatic lifecycle scans run every " +
+                      std::to_wstring(scan_interval.count()) + L" ms.\n"
                 : L"Automatic lifecycle scans are stopped while paused.\n");
 }
 
@@ -490,14 +465,18 @@ void PrintCommands(const bool management_enabled) {
     return false;
 }
 
-[[nodiscard]] int RunFixedEntryApplicationImpl(Logger* const logger) {
+[[nodiscard]] int RunFixedEntryApplicationImpl(
+    Logger* const logger,
+    const AppConfig& config,
+    const std::filesystem::path& recovery_journal_path) {
     const HWND startup_foreground_window = GetForegroundWindow();
     std::wcout
         << L"=== ChromeTaskbarMerger Phase 4 lifecycle monitor ===\n"
         << L"This session uses ITaskbarList::DeleteTab/AddTab only.\n"
         << L"Phase 2 showed that removed windows may be absent from Alt+Tab; "
            L"keep WindowTabs running so they remain reachable.\n"
-        << L"Chrome and WindowTabs lifecycle is checked every 2 seconds "
+        << L"Chrome and WindowTabs lifecycle is checked every "
+        << config.scan_interval.count() << L" ms "
            L"without a busy loop.\n"
         << L"After management starts, Ctrl+C is ignored; use 'q' so every "
            L"changed entry can be restored.\n\n";
@@ -560,8 +539,33 @@ void PrintCommands(const bool management_enabled) {
         return 4;
     }
 
-    FixedEntryManager manager(&controller);
+    RecoveryJournal recovery_journal(recovery_journal_path);
+    const RecoveryLoadResult recovery_load = recovery_journal.Load();
+    if (!recovery_load.succeeded) {
+        const std::wstring message =
+            L"The recovery journal is invalid or unreadable: " +
+            recovery_load.error_message;
+        std::wcerr << message << L'\n';
+        if (logger != nullptr) {
+            logger->Error(message);
+        }
+        return 5;
+    }
+
+    FixedEntryManager manager(&controller, &recovery_journal);
+    std::wstring adopt_error;
+    if (!manager.AdoptRecoveryStates(
+            recovery_load.states, &adopt_error)) {
+        std::wcerr << L"Unable to adopt persisted recovery state: "
+                   << adopt_error << L'\n';
+        return 5;
+    }
     EmergencyRestoreGuard emergency_restore(&manager, logger);
+    if (manager.removed_window_count() != 0 &&
+        !RestoreWithRetry(
+            &manager, logger, L"Startup persisted-state restoration")) {
+        return 5;
+    }
     bool management_enabled = true;
     bool operation_failed = !SynchronizeOrPause(
         &manager,
@@ -569,9 +573,9 @@ void PrintCommands(const bool management_enabled) {
         startup_foreground_window,
         true,
         &management_enabled);
-    ScanSchedule schedule(std::chrono::seconds(2));
+    ScanSchedule schedule(config.scan_interval);
     schedule.MarkScanned(ScanSchedule::Clock::now());
-    PrintCommands(management_enabled);
+    PrintCommands(management_enabled, config.scan_interval);
 
     bool quit_requested = false;
     while (!quit_requested) {
@@ -586,7 +590,7 @@ void PrintCommands(const bool management_enabled) {
             operation_failed = operation_failed || !synchronized;
             schedule.MarkScanned(ScanSchedule::Clock::now());
             if (!management_enabled) {
-                PrintCommands(management_enabled);
+                PrintCommands(management_enabled, config.scan_interval);
             }
             continue;
         }
@@ -635,7 +639,7 @@ void PrintCommands(const bool management_enabled) {
                 break;
             }
             if (command == L'h' || command == L'?') {
-                PrintCommands(management_enabled);
+                PrintCommands(management_enabled, config.scan_interval);
                 continue;
             }
             if (command == L'r') {
@@ -643,7 +647,7 @@ void PrintCommands(const bool management_enabled) {
                     &manager, logger, L"Restore all and pause");
                 management_enabled = false;
                 operation_failed = operation_failed || !restored;
-                PrintCommands(management_enabled);
+                PrintCommands(management_enabled, config.scan_interval);
                 continue;
             }
             if (command == L'a') {
@@ -656,7 +660,7 @@ void PrintCommands(const bool management_enabled) {
                     &management_enabled);
                 operation_failed = operation_failed || !synchronized;
                 schedule.MarkScanned(ScanSchedule::Clock::now());
-                PrintCommands(management_enabled);
+                PrintCommands(management_enabled, config.scan_interval);
                 continue;
             }
             if (command == L's') {
@@ -678,7 +682,7 @@ void PrintCommands(const bool management_enabled) {
                            L"the fixed-entry rule.\n";
                 }
                 if (!management_enabled) {
-                    PrintCommands(management_enabled);
+                    PrintCommands(management_enabled, config.scan_interval);
                 }
                 continue;
             }
@@ -701,9 +705,13 @@ void PrintCommands(const bool management_enabled) {
 
 }  // namespace
 
-int RunFixedEntryApplication(Logger* const logger) {
+int RunFixedEntryApplication(
+    Logger* const logger,
+    const AppConfig& config,
+    const std::filesystem::path& recovery_journal_path) {
     try {
-        return RunFixedEntryApplicationImpl(logger);
+        return RunFixedEntryApplicationImpl(
+            logger, config, recovery_journal_path);
     } catch (const std::exception& exception) {
         if (logger != nullptr) {
             logger->Error(

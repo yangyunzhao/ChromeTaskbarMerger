@@ -6,6 +6,7 @@
 #include <ShObjIdl.h>
 #include <wrl/client.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -20,6 +21,7 @@ struct WindowIdentity {
     HWND hwnd = nullptr;
     DWORD process_id = 0;
     DWORD thread_id = 0;
+    std::uint64_t process_creation_time = 0;
     std::wstring class_name;
 };
 
@@ -53,6 +55,7 @@ struct TaskbarOperationResult {
     const WindowIdentity& expected,
     DWORD process_id,
     DWORD thread_id,
+    std::uint64_t process_creation_time,
     std::wstring_view class_name) noexcept;
 [[nodiscard]] std::wstring_view TaskbarMethodText(TaskbarMethod method);
 
@@ -85,6 +88,8 @@ public:
         TaskbarMutationState* state) override;
     [[nodiscard]] TaskbarOperationResult RestoreWindow(
         TaskbarMutationState* state) override;
+    [[nodiscard]] TaskbarOperationResult ForceRestoreWindow(
+        const ChromeWindowSnapshot& snapshot);
     void Shutdown();
 
 private:

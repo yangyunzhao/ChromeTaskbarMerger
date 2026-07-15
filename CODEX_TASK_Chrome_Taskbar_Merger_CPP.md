@@ -1,6 +1,6 @@
 # Codex 开发任务：Chrome 多配置文件窗口的任务栏单入口工具（C++）
 
-> 文档状态：开发计划已确认。Phase 0～Phase 4 已于 2026-07-15 完成验收。Phase 4 已确认窗口生命周期自动维护、暂停/恢复和低 CPU 阻塞等待可行；Phase 5 已允许开始但尚未开始。
+> 文档状态：开发计划已确认。Phase 0～Phase 4 已于 2026-07-15 完成验收。根据用户要求，Phase 5 和 Phase 6 合并开发：两阶段实现与自动验收已完成，当前为 `1.0.0-rc1`，等待一次合并人工验收后决定是否通过并成为 V1 发布候选。
 >
 > V1 范围修订（2026-07-15）：第一版以“任务栏只保留一个 Chrome 入口”为核心目标。任务栏入口不要求跟随当前活动 Chrome；WindowTabs 和 Alt+Tab 的完整兼容性降为尽力而为，但 Chrome 窗口必须保持打开、可到达和可操作，且所有修改必须能够恢复。
 
@@ -429,7 +429,7 @@ Codex 自动验收：
 - 暂停恢复与正常退出恢复结束时，跟踪移除数均为 0。日志区间内没有 `FAIL`、`ERROR`、`WARNING` 或恢复遗留；
 - PowerShell 退出码未被用户捕获，但程序日志明确记录 `Normal-exit restoration: SUCCESS`，且用户确认程序正常退出、3 个 Chrome 按钮全部恢复，因此不阻塞本阶段验收。
 
-当前状态：`PASS`。Phase 4 验收完成，Phase 5 允许开始。详细证据见 `tests/manual_test_plan.md`。
+当前状态：`PASS`。Phase 4 验收完成；Phase 5/6 已按用户要求合并开发。详细证据见 `tests/manual_test_plan.md`。
 
 ### Phase 5：恢复、Explorer 重建和单实例
 
@@ -463,6 +463,17 @@ Codex 自动验收：
 
 通过标准：正常退出、第二实例、Explorer 重启和恢复命令均行为明确；崩溃恢复至少不会依据陈旧 HWND 误改无关窗口。强制结束后的任务栏视觉恢复仍需用户确认。
 
+2026-07-15 实现与自动验收进度：
+
+- 已使用 `Local\ChromeTaskbarMerger.Singleton` 实现单实例；第二实例通过隐藏窗口消息请求首实例重新扫描，`--restore-all` 可同步请求首实例恢复；
+- 已处理 `TaskbarCreated`：丢弃旧 Shell 跟踪状态、重建 `ITaskbarList`、重新注册托盘图标并在管理启用时重新同步；
+- 已实现 `%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv` 写前恢复日志，使用临时文件替换，并对整个文件严格解析；损坏、截断、重复或超限记录不会被部分采用；
+- 恢复身份包含 HWND、PID、TID、进程创建时间和窗口类；自动测试确认进程创建时间不匹配时安全跳过陈旧状态；
+- 已测试恢复幂等性、持久状态采用/清除、写前保存失败阻止 `DeleteTab`、TaskbarCreated 后重新应用，以及同步/异步实例通知；
+- Debug/Release 构建无警告，CTest 均为 4/4。
+
+当前状态：`AUTOMATIC PASS / MANUAL PENDING`。第二实例、Explorer 重启、强制结束后启动恢复和真实 `--restore-all` 视觉结果并入 Phase 5/6 合并人工验收。
+
 ### Phase 6：托盘、文档和 V1 发布候选
 
 目标：把已通过验证的核心功能包装为可长期使用的 V1。
@@ -494,6 +505,17 @@ Codex 自动验收：
 
 通过标准：Phase 0 至 Phase 5 的门槛保持通过，托盘操作和文档步骤与实际行为一致，Release 可直接运行。完成后才称为 V1 发布候选。
 
+2026-07-15 实现与自动验收进度：
+
+- 无参数 Release 已成为通知区域应用，提供状态、立即扫描、暂停、恢复管理、恢复全部、打开日志目录和退出；Release PE 为 x64 Windows GUI 子系统；
+- `ChromeTaskbarMerger.ini` 支持 500～60000 毫秒扫描间隔，缺失或无效配置安全使用 2000 毫秒默认值；扫描定时器创建失败时会恢复已跟踪按钮并暂停；
+- 已完成根 README、便携 README、MIT 许可证、`.gitignore`、版本资源、CMake 安装规则和 `scripts/build-portable.ps1`；
+- 已在全新 `build-portable` 目录完成 Debug/Release 构建及两套 4/4 CTest，并生成 `dist\ChromeTaskbarMerger` 和 `ChromeTaskbarMerger-1.0.0-rc1-portable-x64.zip`；
+- 交付目录包含 EXE、INI、README、LICENSE；EXE 静态链接 MSVC 运行库，不依赖 VCRUNTIME/MSVCP DLL；
+- `--help`、`--version`、`--list` 和未知参数的 Release 只读回归通过；日志目录不可创建路径不崩溃。真实无参数托盘启动和 `--restore-all` 未由 Codex 自动执行，以免未经用户观察修改当前任务栏。
+
+当前状态：`AUTOMATIC PASS / MANUAL PENDING`。托盘菜单、Explorer 后图标恢复、便携使用与卸载说明并入 Phase 5/6 合并人工验收；人工验收通过前仍称 `1.0.0-rc1`，不称最终 V1。
+
 ### Phase 7：V1 之后的可选增强
 
 以下功能不阻塞 V1：
@@ -504,7 +526,7 @@ Codex 自动验收：
 - 开机启动；
 - 指定管理某些 Chrome 配置文件；
 - 忽略隐身或应用模式窗口；
-- 配置日志等级和扫描间隔；
+- 配置日志等级和更多策略参数；
 - 管理 Edge 等其他 Chromium 浏览器。
 
 每一项增强都必须单独定义验收标准，不能破坏已经通过的单入口和恢复能力。

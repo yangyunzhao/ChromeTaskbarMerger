@@ -1,13 +1,20 @@
+#include "app_config.h"
+#include "app_paths.h"
 #include "chrome_window.h"
 #include "command_line.h"
 #include "ctm/version.h"
 #include "fixed_entry_app.h"
 #include "logger.h"
+#include "restore_command.h"
+#include "single_instance.h"
 #include "taskbar_experiment.h"
+#include "tray_app.h"
 
 #include <Windows.h>
 #include <shellapi.h>
 
+#include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <span>
 #include <string>
@@ -26,9 +33,11 @@ void PrintHelp() {
         << L"  --version       Show the application version.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
-        << L"  --manage        Run the Phase 4 lifecycle monitor.\n\n"
-        << L"--list is read-only. Mutating commands require an explicit "
-           L"confirmation and restore their tracked changes on normal exit.\n";
+        << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
+        << L"  --restore-all   Explicitly restore all identifiable Chrome buttons.\n\n"
+        << L"With no option, start the V1 notification-area application.\n"
+        << L"ChromeTaskbarMerger.ini beside the executable controls the scan "
+           L"interval.\n";
 }
 
 int ListChromeWindows(ctm::Logger* const logger) {
@@ -83,66 +92,193 @@ int ListChromeWindows(ctm::Logger* const logger) {
     return views;
 }
 
-int RunApplication(const std::span<const std::wstring_view> arguments) {
+[[nodiscard]] bool AcquireExclusiveDiagnosticInstance(
+    ctm::SingleInstanceGuard* const guard,
+    ctm::Logger* const logger) {
+    DWORD error_code = ERROR_SUCCESS;
+    const ctm::SingleInstanceStatus status =
+        guard->Acquire(ctm::kSingletonName, &error_code);
+    if (status == ctm::SingleInstanceStatus::Primary) {
+        return true;
+    }
+    const std::wstring message =
+        status == ctm::SingleInstanceStatus::Existing
+            ? L"Another ChromeTaskbarMerger instance is already running."
+            : L"Creating the single-instance mutex failed with Win32 error " +
+                  std::to_wstring(error_code) + L'.';
+    std::wcerr << L"Error: " << message << L'\n';
+    if (logger != nullptr) {
+        logger->Error(message);
+    }
+    return false;
+}
+
+[[nodiscard]] ctm::AppConfigLoadResult LoadConfiguration(
+    ctm::Logger* const logger,
+    const bool show_warnings) {
+    std::wstring path_error;
+    const std::filesystem::path path =
+        ctm::GetConfigurationPath(&path_error);
+    ctm::AppConfigLoadResult result;
+    if (path.empty()) {
+        result.read_succeeded = false;
+        result.warnings.push_back(path_error);
+    } else {
+        result = ctm::LoadAppConfig(path);
+    }
+    for (const std::wstring& warning : result.warnings) {
+        if (show_warnings) {
+            std::wcerr << L"Warning: " << warning << L'\n';
+        }
+        if (logger != nullptr) {
+            logger->Warning(warning);
+        }
+    }
+    if (logger != nullptr) {
+        logger->Info(
+            L"Configuration scan_interval_ms=" +
+            std::to_wstring(result.config.scan_interval.count()) + L'.');
+    }
+    return result;
+}
+
+int RunRestoreAllCommand(
+    ctm::Logger* const logger,
+    const std::filesystem::path& recovery_path) {
+    ctm::SingleInstanceGuard guard;
+    DWORD mutex_error = ERROR_SUCCESS;
+    const ctm::SingleInstanceStatus status =
+        guard.Acquire(ctm::kSingletonName, &mutex_error);
+    if (status == ctm::SingleInstanceStatus::Error) {
+        std::wcerr << L"Error: single-instance mutex failed (Win32 "
+                   << mutex_error << L").\n";
+        return 4;
+    }
+    if (status == ctm::SingleInstanceStatus::Existing) {
+        DWORD notification_error = ERROR_SUCCESS;
+        const bool restored = ctm::NotifyExistingTrayInstance(
+            ctm::ExistingInstanceCommand::RestoreAll,
+            true,
+            &notification_error);
+        if (!restored) {
+            std::wcerr
+                << L"Error: the running instance did not confirm restoration "
+                   L"(Win32 "
+                << notification_error << L").\n";
+            return 5;
+        }
+        std::wcout
+            << L"The running tray instance restored all Chrome buttons and "
+               L"paused management.\n";
+        return 0;
+    }
+    return ctm::RunStandaloneRestoreAll(logger, recovery_path);
+}
+
+int RunApplication(const std::span<const std::wstring_view> arguments,
+                   const HINSTANCE instance) {
     ctm::Logger logger;
     std::wstring logger_error;
     const bool logging_available = logger.Initialize(&logger_error);
     if (logging_available) {
         logger.Info(std::string("ChromeTaskbarMerger ") +
                     std::string(ctm::kVersionUtf8) + " started.");
-    } else {
+    } else if (!arguments.empty()) {
         std::wcerr << L"Warning: logging is unavailable: " << logger_error
                    << L'\n';
     }
+    ctm::Logger* const active_logger =
+        logging_available ? &logger : nullptr;
 
     const ctm::CommandLineOptions options = ctm::ParseCommandLine(arguments);
+    const ctm::AppConfigLoadResult config =
+        LoadConfiguration(active_logger, !arguments.empty());
+
+    std::wstring recovery_path_error;
+    const std::filesystem::path recovery_path =
+        ctm::GetRecoveryJournalPath(&recovery_path_error);
+
     switch (options.command) {
         case ctm::Command::Run:
-            std::wcout << ctm::kApplicationName << L" " << ctm::kVersion
-                       << L"\nDiagnostics are ready. No taskbar changes were made.\n"
-                       << L"Use --manage to start the Phase 4 lifecycle monitor.\n";
-            if (logging_available) {
-                std::wcout << L"Log: " << logger.log_path().wstring() << L'\n';
-                logger.Info("Read-only startup completed; no taskbar APIs were invoked.");
+            if (recovery_path.empty()) {
+                if (active_logger != nullptr) {
+                    active_logger->Error(recovery_path_error);
+                }
+                return 5;
             }
-            return 0;
+            return ctm::RunTrayApplication(
+                instance, active_logger, config.config, recovery_path);
 
         case ctm::Command::ListWindows:
-            return ListChromeWindows(logging_available ? &logger : nullptr);
+            return ListChromeWindows(active_logger);
 
-        case ctm::Command::Experiment:
-            return ctm::RunTaskbarExperiment(
-                logging_available ? &logger : nullptr);
+        case ctm::Command::Experiment: {
+            ctm::SingleInstanceGuard guard;
+            if (!AcquireExclusiveDiagnosticInstance(&guard, active_logger)) {
+                return 4;
+            }
+            return ctm::RunTaskbarExperiment(active_logger);
+        }
 
-        case ctm::Command::Manage:
+        case ctm::Command::Manage: {
+            if (recovery_path.empty()) {
+                std::wcerr << L"Error: " << recovery_path_error << L'\n';
+                return 5;
+            }
+            ctm::SingleInstanceGuard guard;
+            if (!AcquireExclusiveDiagnosticInstance(&guard, active_logger)) {
+                return 4;
+            }
             return ctm::RunFixedEntryApplication(
-                logging_available ? &logger : nullptr);
+                active_logger, config.config, recovery_path);
+        }
+
+        case ctm::Command::RestoreAll:
+            if (recovery_path.empty()) {
+                std::wcerr << L"Error: " << recovery_path_error << L'\n';
+                return 5;
+            }
+            return RunRestoreAllCommand(active_logger, recovery_path);
 
         case ctm::Command::ShowHelp:
             PrintHelp();
-            if (logging_available) {
-                logger.Info("Help requested.");
+            if (active_logger != nullptr) {
+                active_logger->Info("Help requested.");
             }
             return 0;
 
         case ctm::Command::ShowVersion:
             std::wcout << ctm::kApplicationName << L" " << ctm::kVersion
                        << L'\n';
-            if (logging_available) {
-                logger.Info("Version requested.");
+            if (active_logger != nullptr) {
+                active_logger->Info("Version requested.");
             }
             return 0;
 
         case ctm::Command::Invalid:
             std::wcerr << L"Error: " << options.error_message
                        << L"\nRun with --help for usage.\n";
-            if (logging_available) {
-                logger.Error("Invalid command-line arguments.");
+            if (active_logger != nullptr) {
+                active_logger->Error("Invalid command-line arguments.");
             }
             return 2;
     }
-
     return 2;
+}
+
+void AttachParentConsoleForDiagnostics() {
+    if (AttachConsole(ATTACH_PARENT_PROCESS) == FALSE &&
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return;
+    }
+    FILE* stream = nullptr;
+    static_cast<void>(freopen_s(&stream, "CONOUT$", "w", stdout));
+    static_cast<void>(freopen_s(&stream, "CONOUT$", "w", stderr));
+    static_cast<void>(freopen_s(&stream, "CONIN$", "r", stdin));
+    std::ios::sync_with_stdio(true);
+    std::wcout.clear();
+    std::wcerr.clear();
+    std::wcin.clear();
 }
 
 }  // namespace
@@ -150,10 +286,10 @@ int RunApplication(const std::span<const std::wstring_view> arguments) {
 int wmain(const int argument_count, wchar_t* const arguments[]) {
     const std::vector<std::wstring_view> views =
         BuildArgumentViews(argument_count, arguments);
-    return RunApplication(views);
+    return RunApplication(views, GetModuleHandleW(nullptr));
 }
 
-int WINAPI wWinMain(HINSTANCE,
+int WINAPI wWinMain(HINSTANCE instance,
                     HINSTANCE,
                     PWSTR,
                     const int) {
@@ -166,7 +302,10 @@ int WINAPI wWinMain(HINSTANCE,
 
     const std::vector<std::wstring_view> views =
         BuildArgumentViews(argument_count, arguments);
-    const int exit_code = RunApplication(views);
+    if (!views.empty()) {
+        AttachParentConsoleForDiagnostics();
+    }
+    const int exit_code = RunApplication(views, instance);
     LocalFree(arguments);
     return exit_code;
 }
