@@ -41,6 +41,7 @@ MinSizeRel/
 # Runtime and diagnostic output
 *.log
 logs/
+/result.txt
 
 # Local editor and operating-system files
 .idea/

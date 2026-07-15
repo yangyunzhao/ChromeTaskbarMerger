@@ -4,7 +4,7 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0：工程骨架和可重复构建** 已完成。**Phase 1：Chrome 主窗口枚举与诊断** 已通过自动验收，正在等待真实窗口人工对照。
+**Phase 0：工程骨架和可重复构建** 与 **Phase 1：Chrome 主窗口枚举与诊断** 已完成验收。Phase 2 尚未开始。
 
 当前提供：
 
@@ -116,4 +116,6 @@ Manageable: 2; Excluded: 11
 
 自动检查结果：Debug/Release 构建无警告，Debug/Release CTest 均为 1/1 通过，Debug 与 Release 的 `--list` 均返回退出码 `0`，UTF-8 日志包含完整窗口诊断信息。
 
-上述数量会随桌面窗口变化，不能代替用户对真实 Chrome 主窗口的人工确认。Phase 1 在人工对照通过前不会标记为完成。
+真实窗口人工对照结果：用户打开了 3 个 Chrome 主窗口，`--list` 恰好输出 3 个 `MANAGEABLE`；其余 12 个 Chrome 候选均为不可见的工具、状态托盘、电源消息、Crashpad 或 IME 辅助窗口，没有漏报或误报。Phase 1 验收通过。
+
+原始人工测试输出可能包含窗口标题、HWND 和 PID，仅保留在本地 `result.txt`，不纳入 Git 或未来 remote。
