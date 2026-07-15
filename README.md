@@ -4,7 +4,7 @@ ChromeTaskbarMerger 是一个计划中的 Windows 原生工具，目标是在多
 
 ## 当前状态
 
-**Phase 0～Phase 2** 均已完成验收。**Phase 3：固定主入口 MVP** 已完成实现和自动验收，正在等待 1、3、5 个真实 Chrome 窗口的任务栏人工验收；Phase 4 尚未开始。
+**Phase 0～Phase 3** 均已完成验收。Phase 3 已在 1、3、5 个真实 Chrome 窗口上确认固定单入口、重复同步幂等、恢复全部、重新应用和正常退出恢复；Phase 4 已获准但尚未开始。
 
 当前提供：
 
@@ -119,7 +119,9 @@ Phase 2 表明被移除的 Chrome 不会出现在 Alt+Tab 中，因此 `--manage
 
 开始管理后 Ctrl+C 被忽略，请使用 `q` 正常退出。正常退出、`r` 和异常作用域退出只恢复本会话中 `DeleteTab` 成功的窗口，并在失败时重试一次。若出现恢复警告或退出码 `5`，不要再次启动管理，保留日志并通过任务管理器重启 Windows 资源管理器。
 
-Debug/Release 构建无警告，Debug/Release CTest 均为 2/2 通过。自动测试使用伪任务栏控制器覆盖 0、1、3、5 窗口、固定主入口、重复同步、恢复后重用、失败重试和 HWND 身份变化。真实任务栏视觉验收步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。
+Debug/Release 构建无警告，Debug/Release CTest 均为 2/2 通过。自动测试使用伪任务栏控制器覆盖 0、1、3、5 窗口、固定主入口、重复同步、恢复后重用、失败重试和 HWND 身份变化。
+
+2026-07-15 真实任务栏验收通过：一窗口无需移除；三窗口恰好移除/恢复两个非主入口，并验证 `r` 后恢复、`a` 后重新应用；五窗口恰好移除/恢复四个非主入口。三轮重复扫描均保持固定主入口 `HWND=0x0000000000020332`，没有重复 API 调用。日志合计为 7 次成功同步、8 次成功 `DeleteTab`、8 次成功 `AddTab`、4 次成功恢复流程，错误和警告均为 0。用户确认管理期间任务栏只剩一个入口、全部 Chrome 仍可由 WindowTabs 操作，恢复和退出后所有入口重新出现。完整证据与回归步骤见 [tests/manual_test_plan.md](tests/manual_test_plan.md)。
 
 ## Phase 0 验收记录
 
