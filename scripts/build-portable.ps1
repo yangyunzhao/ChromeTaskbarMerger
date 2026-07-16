@@ -12,7 +12,7 @@ $distributionRoot = [System.IO.Path]::GetFullPath(
 $portableDirectory = [System.IO.Path]::GetFullPath(
     (Join-Path $distributionRoot 'ChromeTaskbarMerger'))
 $archivePath = [System.IO.Path]::GetFullPath(
-    (Join-Path $distributionRoot 'ChromeTaskbarMerger-1.0.0-rc3-portable-x64.zip'))
+    (Join-Path $distributionRoot 'ChromeTaskbarMerger-1.0.0-portable-x64.zip'))
 
 function Assert-PathWithinRepository {
     param([Parameter(Mandatory)][string]$Path)

@@ -1,6 +1,6 @@
 # Codex 开发任务：Chrome 多配置文件窗口的任务栏单入口工具（C++）
 
-> 文档状态：Phase 0～Phase 6 已于 2026-07-15 完成开发和验收，`1.0.0-rc1` 已作为 GitHub 预发行版发布。2026-07-16 完成 Phase 7“随 Windows 登录自动启动”的 rc2 实现；用户实测发现普通启动不会在 WindowTabs 后启动时自动恢复，因此 Phase 8 采用明确状态机统一依赖等待行为，目标版本为 `1.0.0-rc3`。
+> 文档状态：Phase 0～Phase 8 已完成开发和验收。`1.0.0-rc1` 曾作为 GitHub 预发行版发布；2026-07-16 完成随 Windows 登录自动启动和 WindowTabs 依赖状态机，用户确认最终真实环境测试通过，并批准发布正式版 `1.0.0`。
 >
 > V1 范围修订（2026-07-15）：第一版以“任务栏只保留一个 Chrome 入口”为核心目标。任务栏入口不要求跟随当前活动 Chrome；WindowTabs 和 Alt+Tab 的完整兼容性降为尽力而为，但 Chrome 窗口必须保持打开、可到达和可操作，且所有修改必须能够恢复。
 
@@ -558,7 +558,7 @@ Codex 自动验收：
 
 当前状态：`AUTOMATIC PASS / SUPERSEDED BY PHASE 8 WAITING MODEL`。rc2 的注册和配置能力继续保留，但 120 秒登录专用等待由 Phase 8 的统一持续等待替代。
 
-### Phase 8：WindowTabs 依赖状态机与自动恢复（rc3）
+### Phase 8：WindowTabs 依赖状态机与自动恢复（1.0.0）
 
 目标：让手动启动和 Windows 登录启动采用相同的 WindowTabs 前置条件行为，避免程序因启动顺序、WindowTabs 临时退出或旧实例存在而永久停在“已暂停”。
 
@@ -581,11 +581,11 @@ Codex 自动验收：
 - 测试新配置的默认值、合法值、非法值回退及保存时保留；
 - Debug/Release 无警告构建且全部 CTest 通过；
 - 通过可控的 `WindowTabs.exe` 测试进程验证真实托盘进程能够从等待自动切换到管理，并在依赖退出后返回等待；
-- 生成并检查 `1.0.0-rc3` x64 便携目录和 ZIP，确认静态 MSVC 运行库、版本资源及配置内容。
+- 生成并检查 `1.0.0` x64 便携目录和 ZIP，确认静态 MSVC 运行库、版本资源及配置内容。
 
 人工验收：
 
-1. WindowTabs 未运行时启动 rc3，确认状态为“等待 WindowTabs”；
+1. WindowTabs 未运行时启动正式版候选，确认状态为“等待 WindowTabs”；
 2. 启动 WindowTabs，确认在一个配置检测周期内自动变为“管理中”；
 3. 退出 WindowTabs，确认 Chrome 按钮恢复且状态回到等待；再次启动后自动恢复管理；
 4. 从托盘主动暂停，随后重启 WindowTabs，确认仍保持“已暂停（用户）”；
@@ -593,16 +593,18 @@ Codex 自动验收：
 
 通过标准：依赖缺失不会显示为用户暂停或永久停止检测；WindowTabs 重启后无需人工点击即可恢复管理；用户暂停和恢复错误不会被自动恢复覆盖；原有任务栏单入口与安全恢复能力保持通过。
 
-2026-07-16 自动验收结果：全新 `build-portable` 中 Debug/Release 均无警告构建，两种配置均为 6/6 CTest；使用临时同名测试进程完成真实托盘生命周期联调，日志确认 `waiting-for-windowtabs → managing → waiting-for-windowtabs`，依赖退出后的恢复成功且无残留进程。rc3 便携目录和 ZIP 包含 EXE/INI/README/LICENSE，版本资源为 `1.0.0-rc3`，Release 为 x64 Windows GUI 且无动态 VCRUNTIME/MSVCP/ucrtbase 依赖。真实 Windows `Run` 值保持不存在。
+2026-07-16 自动验收结果：全新 `build-portable` 中 Debug/Release 均无警告构建，两种配置均为 6/6 CTest；使用临时同名测试进程完成真实托盘生命周期联调，日志确认 `waiting-for-windowtabs → managing → waiting-for-windowtabs`，依赖退出后的恢复成功且无残留进程。正式版便携目录和 ZIP 包含 EXE/INI/README/LICENSE，Release 为 x64 Windows GUI 且无动态 VCRUNTIME/MSVCP/ucrtbase 依赖。真实 Windows `Run` 值保持不存在。
 
-候选产物指纹：
+2026-07-16 人工验收结果：用户使用真实 WindowTabs 完成最终测试并确认通过，同意将本版本作为正式版 `1.0.0` 发布。
+
+正式产物指纹：
 
 ```text
-EXE SHA-256: CFB2C0896B42586285ADD998A0B2FA07A3FEB86D36160D7996DFC60CB86CB3BD
-ZIP SHA-256: CA526C57791283447945D537F4E47FDA557AA514D642A7E89D3B49377D62DE59
+EXE SHA-256: 1F0F1598EC5604D3E269DE0DA20048FE301EFC3C1BA6A7910430AAAAEB7D1944
+ZIP SHA-256: B562958AA93384FDB2547B39B50AB0580B082CD6BD0D28CB588E02246585FBA9
 ```
 
-当前状态：`AUTOMATIC PASS / MANUAL WINDOWTABS VALIDATION PENDING`。
+当前状态：`PASS / APPROVED FOR 1.0.0 RELEASE`。
 
 ### Phase 9：后续可选增强
 

@@ -16,7 +16,7 @@
   <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="状态" src="https://img.shields.io/badge/status-1.0.0--rc3-orange">
+  <a href="https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/yangyunzhao/ChromeTaskbarMerger?display_name=tag&sort=semver"></a>
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -59,12 +59,16 @@ ChromeTaskbarMerger 是一个轻量级 Windows 原生工具，面向同时使用
 
 - Windows 11 x64。
 - Google Chrome。
-- WindowTabs 正在运行，并且能够到达要管理的 Chrome 窗口。
+- WindowTabs 能够到达要管理的 Chrome 窗口；它可以晚于本程序启动，但进入管理后必须保持运行。
 - 构建要求：CMake 3.24 或更高版本，以及包含“使用 C++ 的桌面开发”组件的 Visual Studio 2022 或更高版本。
 
 ## 快速开始
 
-克隆项目并生成便携包：
+下载
+[`ChromeTaskbarMerger-1.0.0-portable-x64.zip`](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/download/v1.0.0/ChromeTaskbarMerger-1.0.0-portable-x64.zip)，
+解压到任意可写目录后运行 `ChromeTaskbarMerger.exe`，无需安装或管理员权限。
+
+如需从源码生成相同的便携包：
 
 ```powershell
 git clone https://github.com/yangyunzhao/ChromeTaskbarMerger.git
@@ -72,7 +76,7 @@ cd ChromeTaskbarMerger
 .\scripts\build-portable.ps1
 ```
 
-然后运行：
+然后运行本地构建：
 
 ```powershell
 .\dist\ChromeTaskbarMerger\ChromeTaskbarMerger.exe
@@ -185,9 +189,9 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## 验证状态
 
-版本 `1.0.0-rc3` 在 Debug 和 Release 配置下均通过全新构建和 6/6 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复、配置校验和管理状态转换。
+版本 `1.0.0` 在 Debug 和 Release 配置下均通过全新构建和 6/6 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复、配置校验和管理状态转换。
 
-真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、Explorer 重启、强制结束恢复、正常退出恢复、便携托盘体验和空闲 CPU。自动进程级联调也确认了 rc3 的“等待 → 管理 → 等待”生命周期；使用真实 WindowTabs 的最终验证仍属于本次发布候选验收项目。
+真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、Explorer 重启、强制结束恢复、正常退出恢复、便携托盘体验和空闲 CPU。自动进程级联调和用户使用真实 WindowTabs 的最终验收均确认了“等待 → 管理 → 等待”生命周期及用户暂停粘性。
 
 详细工程证据：
 

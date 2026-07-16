@@ -1,9 +1,9 @@
-# ChromeTaskbarMerger 1.0.0-rc3 portable x64
+# ChromeTaskbarMerger 1.0.0 portable x64
 
 ## 使用前提
 
 - Windows 11 x64；
-- WindowTabs 正在运行；
+- WindowTabs（可以晚于本程序启动，但进入管理后必须保持运行）；
 - Chrome 主窗口可由 WindowTabs 到达和操作。
 
 本程序使用 `ITaskbarList::DeleteTab/AddTab`，只改变 Windows 任务栏注册状态，不关闭或修改 Chrome 配置文件。被合并的窗口可能不会出现在 Alt+Tab 中，这是当前版本的已知兼容性代价。

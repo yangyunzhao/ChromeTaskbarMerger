@@ -16,7 +16,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc3-orange">
+  <a href="https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yangyunzhao/ChromeTaskbarMerger?display_name=tag&sort=semver"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -61,12 +61,18 @@ The application does not inject code, close windows, edit Chrome preferences, or
 
 - Windows 11 x64.
 - Google Chrome.
-- WindowTabs running and able to reach the managed Chrome windows.
+- WindowTabs able to reach the managed Chrome windows. It may start later than
+  ChromeTaskbarMerger, but must remain running while management is active.
 - For building: CMake 3.24 or newer and Visual Studio 2022 or newer with **Desktop development with C++**.
 
 ## Quick start
 
-Clone and build the portable package:
+Download
+[`ChromeTaskbarMerger-1.0.0-portable-x64.zip`](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/download/v1.0.0/ChromeTaskbarMerger-1.0.0-portable-x64.zip),
+extract it to a writable directory, and run `ChromeTaskbarMerger.exe`. No
+installer or administrator privileges are required.
+
+To build the same portable package from source:
 
 ```powershell
 git clone https://github.com/yangyunzhao/ChromeTaskbarMerger.git
@@ -74,7 +80,7 @@ cd ChromeTaskbarMerger
 .\scripts\build-portable.ps1
 ```
 
-Then run:
+Then run the local build:
 
 ```powershell
 .\dist\ChromeTaskbarMerger\ChromeTaskbarMerger.exe
@@ -202,9 +208,9 @@ The application icon source and generated multi-size ICO are stored under `asset
 
 ## Validation status
 
-Version `1.0.0-rc3` passes clean Debug and Release builds and 6/6 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, atomic configuration updates, temporary-registry startup lifecycle, portable-path repair, configuration validation, and management-state transitions.
+Version `1.0.0` passes clean Debug and Release builds and 6/6 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, atomic configuration updates, temporary-registry startup lifecycle, portable-path repair, configuration validation, and management-state transitions.
 
-Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation and closure, main-entry replacement, pause/resume, Explorer restart, forced-termination recovery, normal-exit restoration, the portable tray experience, and idle CPU behavior. An automated process-level integration check also confirmed the rc3 `waiting → managing → waiting` lifecycle; final validation with the real WindowTabs application remains a release-candidate check.
+Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation and closure, main-entry replacement, pause/resume, Explorer restart, forced-termination recovery, normal-exit restoration, the portable tray experience, and idle CPU behavior. Process-level integration and final user validation with the real WindowTabs application both confirmed the `waiting → managing → waiting` lifecycle and sticky user pause behavior.
 
 Detailed engineering evidence:
 

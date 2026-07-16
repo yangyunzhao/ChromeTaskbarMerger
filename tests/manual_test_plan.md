@@ -561,7 +561,7 @@ Copy-Item `
 | Phase 5 | Explorer 重启、异常恢复和单实例 | PASS |
 | Phase 6 | 托盘菜单和 Release 便携体验 | PASS |
 | Phase 7 | 随 Windows 登录自动启动 | AUTOMATIC PASS；等待模型由 Phase 8 替代 |
-| Phase 8 | WindowTabs 持续等待与自动恢复 | AUTOMATIC PASS / MANUAL PENDING |
+| Phase 8 | WindowTabs 持续等待与自动恢复 | PASS |
 
 ## Phase 7：随 Windows 登录自动启动（rc2）
 
@@ -615,7 +615,7 @@ Copy-Item `
 4. 手工改回 `false`，从托盘彻底退出后重新启动，确认菜单不勾选且启动项已删除；
 5. 最后按自己的使用偏好设置，并报告 A～D 是否全部符合预期。
 
-本次候选产物指纹：
+正式产物指纹：
 
 ```text
 EXE SHA-256: 24073B8606648A57ACB9FD92478EA1DC4B63BC1AB673676989C237D7C37387CE
@@ -626,7 +626,7 @@ ZIP SHA-256: E90F73DAA027763BDC16CCA6F15A593DC6ED6E02EFCBC61AB87D9C97F23197B2
 
 > rc3 说明：以上 120 秒超时步骤是 rc2 的历史验收。Phase 8 改为手动启动和登录启动共用的持续等待，不再要求 WindowTabs 在 120 秒内出现。
 
-## Phase 8：WindowTabs 依赖状态机与自动恢复（rc3）
+## Phase 8：WindowTabs 依赖状态机与自动恢复（1.0.0）
 
 2026-07-16 用户确认采用方案 B：明确区分“等待 WindowTabs、管理中、用户暂停、异常暂停、需要恢复”，WindowTabs 不可用时持续低频等待，启动或重启后自动恢复管理。
 
@@ -636,15 +636,15 @@ ZIP SHA-256: E90F73DAA027763BDC16CCA6F15A593DC6ED6E02EFCBC61AB87D9C97F23197B2
 | --- | --- | --- | --- |
 | 状态机 | 等待、自动管理、依赖退出、用户暂停、异常和恢复门禁互不混淆 | 独立状态机测试已覆盖全部转换和恢复状态不可降级 | PASS |
 | 配置 | `windowtabs_check_interval_ms` 默认 3000，范围 500～60000，保存启动设置时不丢失 | 默认、合法、越界回退、原子保存和重载测试通过 | PASS |
-| 普通启动等待 | WindowTabs 不存在时保持运行并进入 `waiting-for-windowtabs` | rc3 Debug 日志确认持续等待，Chrome 修改数为 0 | PASS |
+| 普通启动等待 | WindowTabs 不存在时保持运行并进入 `waiting-for-windowtabs` | Debug 日志确认持续等待，Chrome 修改数为 0 | PASS |
 | 自动恢复 | 测试用同名进程出现后进入 `managing`，退出后恢复并回到等待 | 两次转换均在配置周期内发生；恢复成功、跟踪修改数为 0 | PASS |
 | 安全清理 | 联调结束不存在 ChromeTaskbarMerger/测试 WindowTabs 残留，显式恢复成功 | `--restore-all` 返回 0，两个测试进程均已结束 | PASS |
 | Debug/Release | 两种配置无警告构建，全部 CTest 通过 | 全新 `build-portable` 两种配置均构建成功、6/6 通过 | PASS |
-| 便携产物 | rc3 EXE/INI/README/LICENSE 与 ZIP 完整，版本和静态运行库正确 | 四文件完整；1.0.0-rc3；x64 GUI；无动态 VCRUNTIME/MSVCP/ucrtbase 依赖 | PASS |
+| 便携产物 | 正式版 EXE/INI/README/LICENSE 与 ZIP 完整，版本和静态运行库正确 | 四文件完整；1.0.0；x64 GUI；无动态 VCRUNTIME/MSVCP/ucrtbase 依赖 | PASS |
 
 ### 人工验收步骤
 
-前置条件：使用 rc3 便携版；准备 3 个可安全关闭的普通 Chrome 窗口。测试前确认托盘没有旧版本实例。若按钮异常，先选择“恢复全部 Chrome 按钮”，必要时重启 Windows 资源管理器。
+前置条件：使用正式版候选便携包；准备 3 个可安全关闭的普通 Chrome 窗口。测试前确认托盘没有旧版本实例。若按钮异常，先选择“恢复全部 Chrome 按钮”，必要时重启 Windows 资源管理器。
 
 #### A. 启动顺序
 
@@ -683,11 +683,13 @@ D 配置和登录启动：通过/失败（现象）
 CPU/托盘/Chrome 按钮是否有其他异常：无/说明
 ```
 
+2026-07-16 用户回报最终测试通过，并同意发布正式版 `1.0.0`。
+
 本次候选产物指纹：
 
 ```text
-EXE SHA-256: CFB2C0896B42586285ADD998A0B2FA07A3FEB86D36160D7996DFC60CB86CB3BD
-ZIP SHA-256: CA526C57791283447945D537F4E47FDA557AA514D642A7E89D3B49377D62DE59
+EXE SHA-256: 1F0F1598EC5604D3E269DE0DA20048FE301EFC3C1BA6A7910430AAAAEB7D1944
+ZIP SHA-256: B562958AA93384FDB2547B39B50AB0580B082CD6BD0D28CB588E02246585FBA9
 ```
 
-当前状态：`AUTOMATIC PASS / MANUAL WINDOWTABS VALIDATION PENDING`。
+当前状态：`PASS / APPROVED FOR 1.0.0 RELEASE`。
