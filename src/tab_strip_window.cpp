@@ -8,7 +8,7 @@ namespace ctm {
 namespace {
 
 constexpr wchar_t kTabStripClassName[] =
-    L"ChromeTaskbarMerger.V2.Phase1.TabStrip";
+    L"ChromeTaskbarMerger.V2.TabStrip";
 
 [[nodiscard]] int RectangleWidth(const RECT& rectangle) noexcept {
     return rectangle.right - rectangle.left;

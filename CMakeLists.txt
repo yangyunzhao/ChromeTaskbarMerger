@@ -59,6 +59,8 @@ add_library(
     STATIC
         src/chrome_window.cpp
         src/chrome_window.h
+        src/chrome_window_registry.cpp
+        src/chrome_window_registry.h
         src/app_config.cpp
         src/app_config.h
         src/app_paths.cpp
@@ -73,6 +75,8 @@ add_library(
         src/fixed_entry_manager.h
         src/logger.cpp
         src/logger.h
+        src/lifecycle_sync.cpp
+        src/lifecycle_sync.h
         src/management_state.cpp
         src/management_state.h
         src/process_identity.cpp
@@ -111,6 +115,8 @@ add_library(
         src/window_identity_query.h
         src/windowtabs_presence.cpp
         src/windowtabs_presence.h
+        src/win_event_monitor.cpp
+        src/win_event_monitor.h
 )
 
 target_compile_features(ctm_core PUBLIC cxx_std_20)

@@ -35,7 +35,7 @@ void PrintHelp() {
         << L"  --autostart     Internal Windows-login startup entry.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
-        << L"  --v2-experiment Run the isolated V2 Phase 1 native-tab experiment.\n"
+        << L"  --v2-experiment Run the isolated V2 Phase 2 lifecycle experiment.\n"
         << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
         << L"  --restore-all   Explicitly restore all identifiable Chrome buttons.\n\n"
         << L"With no option, start the V1 notification-area application.\n"

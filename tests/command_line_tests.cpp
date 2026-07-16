@@ -91,7 +91,7 @@ void TestV2ExperimentOption() {
     const ctm::CommandLineOptions result =
         ctm::ParseCommandLine(arguments);
     Expect(result.command == ctm::Command::V2Experiment,
-           "--v2-experiment should select the isolated V2 Phase 1 command");
+           "--v2-experiment should select the isolated V2 lifecycle command");
     Expect(result.error_message.empty(),
            "--v2-experiment should not produce an error");
 }

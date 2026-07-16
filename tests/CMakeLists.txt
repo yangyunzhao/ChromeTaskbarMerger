@@ -150,3 +150,37 @@ add_test(
     NAME v2_window_group_integration
     COMMAND ChromeTaskbarMergerWindowGroupIntegrationTests
 )
+
+add_executable(
+    ChromeTaskbarMergerChromeWindowRegistryTests
+    chrome_window_registry_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerChromeWindowRegistryTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerChromeWindowRegistryTests)
+
+add_test(
+    NAME v2_chrome_window_registry
+    COMMAND ChromeTaskbarMergerChromeWindowRegistryTests
+)
+
+add_executable(
+    ChromeTaskbarMergerLifecycleSyncTests
+    lifecycle_sync_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerLifecycleSyncTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerLifecycleSyncTests)
+
+add_test(
+    NAME v2_lifecycle_sync
+    COMMAND ChromeTaskbarMergerLifecycleSyncTests
+)

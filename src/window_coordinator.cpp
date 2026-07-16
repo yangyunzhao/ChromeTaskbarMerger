@@ -3,6 +3,7 @@
 #include "window_identity_query.h"
 
 #include <algorithm>
+#include <iterator>
 
 namespace ctm {
 namespace {
@@ -145,11 +146,13 @@ WindowCoordinationResult WindowGroupPlacementController::Capture(
             result.message = validation.message;
             return result;
         }
-        if (IsIconic(identity.hwnd) != FALSE ||
-            IsZoomed(identity.hwnd) != FALSE) {
+        const bool minimized = IsIconic(identity.hwnd) != FALSE;
+        const bool maximized = IsZoomed(identity.hwnd) != FALSE;
+        if (minimized || maximized) {
             result.win32_error = ERROR_NOT_SUPPORTED;
-            result.message =
-                L"Phase 1 accepts only normal, non-minimized windows.";
+            result.message = minimized
+                                 ? L"The target window is minimized; restore it to normal first."
+                                 : L"The target window is maximized; restore it to normal first.";
             return result;
         }
 
@@ -162,6 +165,7 @@ WindowCoordinationResult WindowGroupPlacementController::Capture(
             result.message = L"Capturing the original window layout failed.";
             return result;
         }
+        record.participating = true;
         captured.push_back(record);
     }
 
@@ -172,11 +176,130 @@ WindowCoordinationResult WindowGroupPlacementController::Capture(
     return result;
 }
 
+WindowCoordinationResult
+WindowGroupPlacementController::SynchronizeParticipants(
+    const std::span<const WindowIdentity> identities) {
+    WindowCoordinationResult result;
+    std::vector<WindowIdentity> unique;
+    unique.reserve(identities.size());
+    for (const WindowIdentity& identity : identities) {
+        const bool duplicate = std::any_of(
+            unique.begin(),
+            unique.end(),
+            [&identity](const WindowIdentity& existing) {
+                return existing.hwnd == identity.hwnd;
+            });
+        if (!WindowIdentityIsComplete(identity) || duplicate) {
+            result.identity = identity;
+            result.win32_error = ERROR_INVALID_DATA;
+            result.message =
+                L"A participating window identity is incomplete or duplicated.";
+            return result;
+        }
+        unique.push_back(identity);
+    }
+
+    std::vector<PlacementRecord> captured;
+    captured.reserve(unique.size());
+    for (const WindowIdentity& identity : unique) {
+        const auto existing = std::find_if(
+            records_.begin(),
+            records_.end(),
+            [&identity](const PlacementRecord& record) {
+                return !record.invalidated &&
+                       WindowIdentitiesMatch(record.identity, identity);
+            });
+        if (existing != records_.end()) {
+            continue;
+        }
+
+        result.identity = identity;
+        const WindowActivationResult validation =
+            IdentityFailure(identity, true);
+        if (!validation.succeeded) {
+            result.win32_error = validation.win32_error;
+            result.message = validation.message;
+            return result;
+        }
+        const bool minimized = IsIconic(identity.hwnd) != FALSE;
+        const bool maximized = IsZoomed(identity.hwnd) != FALSE;
+        if (minimized || maximized) {
+            result.win32_error = ERROR_NOT_SUPPORTED;
+            result.message = minimized
+                                 ? L"The new group member is minimized; restore it to normal first."
+                                 : L"The new group member is maximized; restore it to normal first.";
+            return result;
+        }
+
+        PlacementRecord record;
+        record.identity = identity;
+        record.placement.length = sizeof(record.placement);
+        if (GetWindowPlacement(identity.hwnd, &record.placement) == FALSE ||
+            GetWindowRect(identity.hwnd, &record.rectangle) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message =
+                L"Capturing a new member's original window layout failed.";
+            return result;
+        }
+        record.participating = true;
+        captured.push_back(record);
+    }
+
+    for (PlacementRecord& record : records_) {
+        record.participating = false;
+    }
+    for (const WindowIdentity& identity : unique) {
+        const auto existing = std::find_if(
+            records_.begin(),
+            records_.end(),
+            [&identity](const PlacementRecord& record) {
+                return !record.invalidated &&
+                       WindowIdentitiesMatch(record.identity, identity);
+            });
+        if (existing != records_.end()) {
+            existing->participating = true;
+        }
+    }
+    records_.insert(
+        records_.end(),
+        std::make_move_iterator(captured.begin()),
+        std::make_move_iterator(captured.end()));
+    result.succeeded = true;
+    result.identity = {};
+    result.message =
+        L"The captured window set matches the current group membership.";
+    return result;
+}
+
+std::size_t WindowGroupPlacementController::InvalidateHandles(
+    const std::span<const HWND> destroyed_handles) noexcept {
+    std::size_t invalidated_count = 0;
+    for (PlacementRecord& record : records_) {
+        if (!record.invalidated &&
+            std::find(
+                destroyed_handles.begin(),
+                destroyed_handles.end(),
+                record.identity.hwnd) != destroyed_handles.end()) {
+            record.participating = false;
+            record.invalidated = true;
+            record.restore_completed = true;
+            ++invalidated_count;
+        }
+    }
+    return invalidated_count;
+}
+
 WindowCoordinationResult WindowGroupPlacementController::Arrange(
     const WindowGroupGeometry& geometry,
     const WindowIdentity& active_identity) {
     WindowCoordinationResult result;
-    if (!geometry.valid || records_.empty()) {
+    const bool has_participant = std::any_of(
+        records_.begin(),
+        records_.end(),
+        [](const PlacementRecord& record) {
+            return record.participating && !record.invalidated;
+        });
+    if (!geometry.valid || !has_participant) {
         result.win32_error = ERROR_INVALID_STATE;
         result.message = L"The group geometry or captured layout is unavailable.";
         return result;
@@ -186,7 +309,8 @@ WindowCoordinationResult WindowGroupPlacementController::Arrange(
         records_.begin(),
         records_.end(),
         [&active_identity](const PlacementRecord& record) {
-            return WindowIdentitiesMatch(
+            return record.participating && !record.invalidated &&
+                   WindowIdentitiesMatch(
                 record.identity, active_identity);
         });
     if (active == records_.end()) {
@@ -198,6 +322,9 @@ WindowCoordinationResult WindowGroupPlacementController::Arrange(
     const int width = RectangleWidth(geometry.content_bounds);
     const int height = RectangleHeight(geometry.content_bounds);
     for (PlacementRecord& record : records_) {
+        if (!record.participating || record.invalidated) {
+            continue;
+        }
         result.identity = record.identity;
         const WindowActivationResult validation =
             IdentityFailure(record.identity, true);
@@ -222,6 +349,9 @@ WindowCoordinationResult WindowGroupPlacementController::Arrange(
     }
 
     for (const PlacementRecord& record : records_) {
+        if (!record.participating || record.invalidated) {
+            continue;
+        }
         if (WindowIdentitiesMatch(record.identity, active_identity)) {
             continue;
         }

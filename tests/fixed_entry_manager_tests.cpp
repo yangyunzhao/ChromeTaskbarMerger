@@ -802,6 +802,62 @@ void TestRealTabGateBlocksMissingTabAndActivationEvidence() {
     static_cast<void>(manager.RestoreAll());
 }
 
+void TestDynamicNewTabFailureKeepsItsTaskbarEntryVisible() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    const ctm::ChromeWindowSnapshot first = MakeWindow(1);
+    const ctm::ChromeWindowSnapshot added = MakeWindow(2);
+    const auto candidate_for = [](const ctm::ChromeWindowSnapshot& window) {
+        return ctm::TabGroupCandidate{
+            .identity = {
+                .hwnd = window.hwnd,
+                .process_id = window.process_id,
+                .thread_id = window.thread_id,
+                .process_creation_time = window.process_creation_time,
+                .class_name = window.class_name,
+            },
+            .title = window.title,
+        };
+    };
+
+    ctm::TabGroupModel model;
+    const ctm::TabGroupCandidate first_candidate = candidate_for(first);
+    static_cast<void>(
+        model.Synchronize(std::span(&first_candidate, 1)));
+    Expect(model.MarkTabCreated(first_candidate.identity, true) &&
+               model.MarkActivationPathVerified(
+                   first_candidate.identity, true),
+           "the initial lifecycle tab should be fully reachable");
+    model.SetTabStripHealthy(true);
+    ctm::TabGroupTaskbarReadinessGate gate(&model);
+    ctm::FixedEntryManager manager(&controller, &store, &gate);
+    static_cast<void>(manager.Synchronize(
+        std::span(&first, 1), first.hwnd));
+
+    const std::vector windows = {first, added};
+    const std::vector candidates = {
+        first_candidate, candidate_for(added)};
+    static_cast<void>(model.Synchronize(candidates, first_candidate.identity));
+    const ctm::FixedEntryReport failed_add =
+        manager.Synchronize(windows, first.hwnd);
+    Expect(!failed_add.succeeded && !failed_add.readiness_error.empty(),
+           "a dynamic member without a created tab should fail the readiness transaction");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove, 2) == 0 &&
+               manager.removed_window_count() == 0,
+           "dynamic tab creation failure must leave the new taskbar entry visible and untracked");
+
+    Expect(model.MarkTabCreated(candidates[1].identity, true) &&
+               model.MarkActivationPathVerified(
+                   candidates[1].identity, true),
+           "the retried dynamic tab should become reachable");
+    const ctm::FixedEntryReport retry =
+        manager.Synchronize(windows, first.hwnd);
+    Expect(retry.succeeded &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove, 2) == 1,
+           "only the successful dynamic-tab retry may remove the new taskbar entry");
+    static_cast<void>(manager.RestoreAll());
+}
+
 void TestTaskbarRecreationForgetsShellStateAndReapplies() {
     FakeTaskbarController controller;
     RecordingRecoveryStore store;
@@ -881,6 +937,7 @@ int main() {
     TestReadinessRejectionRollsBackWithoutTaskbarMutation();
     TestReadinessRollbackPersistenceFailureRemainsRecoverable();
     TestRealTabGateBlocksMissingTabAndActivationEvidence();
+    TestDynamicNewTabFailureKeepsItsTaskbarEntryVisible();
     TestTaskbarRecreationForgetsShellStateAndReapplies();
     TestPersistedRecoveryStatesCanBeAdoptedAndRestored();
 

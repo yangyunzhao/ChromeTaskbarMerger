@@ -18,9 +18,9 @@
 namespace {
 
 constexpr wchar_t kTestWindowClass[] =
-    L"ChromeTaskbarMerger.V2.Phase1.IntegrationTest";
+    L"ChromeTaskbarMerger.V2.Phase2.IntegrationTest";
 constexpr wchar_t kTabStripWindowClass[] =
-    L"ChromeTaskbarMerger.V2.Phase1.TabStrip";
+    L"ChromeTaskbarMerger.V2.TabStrip";
 
 int failures = 0;
 
@@ -109,9 +109,7 @@ public:
     }
 
     ~ScopedTestWindow() {
-        if (hwnd_ != nullptr) {
-            DestroyWindow(hwnd_);
-        }
+        Destroy();
     }
 
     ScopedTestWindow() = default;
@@ -120,6 +118,13 @@ public:
 
     [[nodiscard]] HWND hwnd() const noexcept {
         return hwnd_;
+    }
+
+    void Destroy() noexcept {
+        if (hwnd_ != nullptr) {
+            DestroyWindow(hwnd_);
+            hwnd_ = nullptr;
+        }
     }
 
 private:
@@ -399,7 +404,7 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
                            sink.last_close_identity, identities[2]),
                    "the close hit region should report only its exact identity");
             Expect(IsWindow(identities[2].hwnd) != FALSE,
-                   "Phase 1 close hit testing must not close a real window automatically");
+                   "the strip should delegate closing to its lifecycle event sink");
         }
 
         ctm::WindowIdentity stale_identity = identities[1];
@@ -428,11 +433,95 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
            "the integration test should leave no native tab-strip window");
 }
 
+void TestDynamicParticipantAddCloseAndRestore() {
+    ScopedTestWindowClass window_class;
+    Expect(window_class.Register(),
+           "the dynamic integration window class should register");
+    if (failures != 0) {
+        return;
+    }
+
+    constexpr std::array<RECT, 3> original_bounds = {{
+        {.left = 60, .top = 80, .right = 500, .bottom = 420},
+        {.left = 120, .top = 140, .right = 560, .bottom = 480},
+        {.left = 180, .top = 200, .right = 620, .bottom = 540},
+    }};
+    std::array<ScopedTestWindow, 3> windows;
+    Expect(windows[0].Create(L"Dynamic One", original_bounds[0]) &&
+               windows[1].Create(L"Dynamic Two", original_bounds[1]),
+           "two initial dynamic windows should be created");
+    if (windows[0].hwnd() == nullptr || windows[1].hwnd() == nullptr) {
+        return;
+    }
+
+    std::vector<ctm::WindowIdentity> identities;
+    for (std::size_t index = 0; index < 2; ++index) {
+        const ctm::WindowIdentityQueryResult query =
+            ctm::QueryWindowIdentity(windows[index].hwnd());
+        Expect(query.succeeded,
+               "an initial dynamic window identity should be queryable");
+        identities.push_back(query.identity);
+    }
+
+    ctm::WindowGroupPlacementController placement;
+    Expect(placement.Capture(identities).succeeded,
+           "initial dynamic placements should be captured");
+    const ctm::WindowGroupGeometry geometry =
+        ctm::CalculateWindowGroupGeometry(
+            original_bounds.front(), ctm::kV2TabStripHeight);
+    Expect(placement.Arrange(geometry, identities.front()).succeeded,
+           "the initial dynamic group should arrange");
+
+    Expect(windows[2].Create(L"Dynamic Three", original_bounds[2]),
+           "a third window should be created after management starts");
+    if (windows[2].hwnd() == nullptr) {
+        return;
+    }
+    const ctm::WindowIdentityQueryResult added =
+        ctm::QueryWindowIdentity(windows[2].hwnd());
+    Expect(added.succeeded,
+           "the new dynamic member identity should be queryable");
+    identities.push_back(added.identity);
+    const ctm::WindowCoordinationResult participants =
+        placement.SynchronizeParticipants(identities);
+    Expect(participants.succeeded &&
+               placement.captured_window_count() == 3,
+           "the new member should receive one original-layout record");
+    Expect(placement.Arrange(geometry, identities.back()).succeeded,
+           "the expanded dynamic group should arrange with the new member active");
+    for (const ScopedTestWindow& window : windows) {
+        RECT current{};
+        GetWindowRect(window.hwnd(), &current);
+        Expect(RectanglesEqual(current, geometry.content_bounds),
+               "every expanded dynamic member should share the group rectangle");
+    }
+
+    windows[1].Destroy();
+    const std::array remaining = {identities[0], identities[2]};
+    Expect(placement.SynchronizeParticipants(remaining).succeeded,
+           "closing a member should remove it from current arrangement work");
+    Expect(placement.Arrange(geometry, identities[2]).succeeded,
+           "remaining members should still arrange after a close");
+
+    const ctm::WindowGroupRestoreReport restored = placement.RestoreAll();
+    Expect(restored.succeeded && !placement.needs_restore() &&
+               restored.restored_count == 2 &&
+               restored.safely_skipped_count == 1,
+           "live dynamic members should restore and the closed identity should be safely skipped");
+    for (const std::size_t index : {std::size_t{0}, std::size_t{2}}) {
+        RECT current{};
+        GetWindowRect(windows[index].hwnd(), &current);
+        Expect(RectanglesEqual(current, original_bounds[index]),
+               "each live dynamic member should regain its own original rectangle");
+    }
+}
+
 }  // namespace
 
 int main() {
     TestGeometryPolicy();
     TestSyntheticWindowGroupingSwitchAndRestore();
+    TestDynamicParticipantAddCloseAndRestore();
 
     if (failures != 0) {
         std::cerr << failures << " window-group integration test(s) failed.\n";

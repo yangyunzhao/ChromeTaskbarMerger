@@ -51,6 +51,10 @@ class WindowGroupPlacementController final {
 public:
     [[nodiscard]] WindowCoordinationResult Capture(
         std::span<const WindowIdentity> identities);
+    [[nodiscard]] WindowCoordinationResult SynchronizeParticipants(
+        std::span<const WindowIdentity> identities);
+    [[nodiscard]] std::size_t InvalidateHandles(
+        std::span<const HWND> destroyed_handles) noexcept;
     [[nodiscard]] WindowCoordinationResult Arrange(
         const WindowGroupGeometry& geometry,
         const WindowIdentity& active_identity);
@@ -68,6 +72,8 @@ private:
         RECT rectangle{};
         bool position_modified = false;
         bool restore_completed = false;
+        bool participating = false;
+        bool invalidated = false;
     };
 
     std::vector<PlacementRecord> records_;
