@@ -214,7 +214,10 @@ Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation 
 
 Detailed engineering evidence:
 
-- [Development plan and phase reports](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)
+- [Documentation index](docs/README.md)
+- [V1 requirements and design](docs/V1_REQUIREMENTS.md)
+- [V2 requirements and design](docs/V2_REQUIREMENTS.md)
+- [Codex development and acceptance guide](docs/CODEX_DEVELOPMENT_GUIDE.md)
 - [Manual test plan and recorded results](tests/manual_test_plan.md)
 
 ## Known limitations

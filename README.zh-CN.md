@@ -195,7 +195,10 @@ ctest --test-dir build -C Release --output-on-failure
 
 详细工程证据：
 
-- [开发计划和阶段报告](CODEX_TASK_Chrome_Taskbar_Merger_CPP.md)
+- [文档索引](docs/README.md)
+- [V1 需求与设计](docs/V1_REQUIREMENTS.md)
+- [V2 需求与设计](docs/V2_REQUIREMENTS.md)
+- [Codex 开发与验收规范](docs/CODEX_DEVELOPMENT_GUIDE.md)
 - [手工测试计划和已记录结果](tests/manual_test_plan.md)
 
 ## 已知限制
