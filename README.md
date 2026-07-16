@@ -16,7 +16,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc2-orange">
+  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc3-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -40,6 +40,8 @@ The application runs in the notification area, continuously handles Chrome windo
 - Uses a configurable low-frequency scan interval without a busy loop.
 - Optionally starts when the current user signs in to Windows, configured from
   either the tray menu or the portable INI file.
+- Waits continuously when WindowTabs is unavailable and automatically resumes
+  after it starts or restarts.
 - Writes recovery intent before every taskbar removal.
 - Validates HWND, PID, TID, process creation time, and window class before recovery.
 - Provides a standalone `--restore-all` recovery command.
@@ -84,9 +86,9 @@ The application appears in the Windows notification area. Starting the EXE again
 
 | Action | Behavior |
 | --- | --- |
-| Rescan now | Immediately enumerates Chrome windows and reapplies the rule when management is active. |
-| Pause management | Restores tracked Chrome buttons and stops automatic scans. |
-| Resume management | Revalidates prerequisites and reapplies the single-entry rule. |
+| Rescan now | Enumerates Chrome while paused, synchronizes while managing, or checks WindowTabs immediately while waiting. |
+| Pause management | Restores tracked Chrome buttons or cancels prerequisite waiting, then records an explicit user pause. |
+| Resume management | Revalidates prerequisites; manages immediately when WindowTabs is present or enters continuous waiting otherwise. |
 | Restore all Chrome buttons | Explicitly calls safe restoration for tracked and currently identifiable Chrome windows, then remains paused. |
 | Start when signing in to Windows | Atomically updates the portable configuration and the current-user Windows startup registration. |
 | Open log folder | Opens the per-user log directory. |
@@ -100,11 +102,14 @@ Place `ChromeTaskbarMerger.ini` beside the executable:
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+windowtabs_check_interval_ms=3000
 start_with_windows=false
 ```
 
-`scan_interval_ms` supports 500–60000 milliseconds. `start_with_windows` accepts
-`true` or `false` and defaults to `false`.
+Both intervals support 500–60000 milliseconds. `scan_interval_ms` controls Chrome
+scans while managing; `windowtabs_check_interval_ms` controls prerequisite checks
+while waiting. `start_with_windows` accepts `true` or `false` and defaults to
+`false`.
 
 The tray setting takes effect immediately and saves the INI file. Direct file
 edits are read only at process startup: fully exit the running tray instance and
@@ -114,10 +119,14 @@ manual relaunch is required so the application can create its per-user Windows
 `Run` entry.
 
 Automatic launch means launch after the current user signs in, not a system
-service at boot. It requires no administrator rights. If WindowTabs has not
-started yet, ChromeTaskbarMerger waits in the tray and retries for up to 120
-seconds before remaining paused. Moving the portable directory requires one
-manual launch from the new location to repair the registered executable path.
+service at boot, and requires no administrator rights. Manual and login launches
+share the same prerequisite behavior: if WindowTabs is unavailable,
+ChromeTaskbarMerger waits in the tray indefinitely without removing Chrome
+buttons. It starts management automatically after WindowTabs appears. If
+WindowTabs exits during management, tracked buttons are restored and management
+resumes automatically after WindowTabs restarts. An explicit user pause remains
+paused. Moving the portable directory requires one manual launch from the new
+location to repair the registered executable path.
 
 ## Logs and recovery
 
@@ -193,9 +202,9 @@ The application icon source and generated multi-size ICO are stored under `asset
 
 ## Validation status
 
-Version `1.0.0-rc2` passes clean Debug and Release builds and 5/5 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, atomic configuration updates, temporary-registry startup lifecycle, portable-path repair, and startup-wait scheduling.
+Version `1.0.0-rc3` passes clean Debug and Release builds and 6/6 CTest tests in both configurations. Automated coverage includes command parsing, Chrome identity, fixed-entry lifecycle, recovery idempotence, write-ahead failure safety, corrupt journal rejection, stale HWND/PID protection, taskbar recreation, single-instance messaging, atomic configuration updates, temporary-registry startup lifecycle, portable-path repair, configuration validation, and management-state transitions.
 
-Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation and closure, main-entry replacement, pause/resume, normal-exit restoration, and idle CPU behavior. Explorer restart, forced-termination recovery, and final portable tray acceptance remain release-candidate checks.
+Real taskbar validation has covered 1, 3, and 5 Chrome windows, window creation and closure, main-entry replacement, pause/resume, Explorer restart, forced-termination recovery, normal-exit restoration, the portable tray experience, and idle CPU behavior. An automated process-level integration check also confirmed the rc3 `waiting → managing → waiting` lifecycle; final validation with the real WindowTabs application remains a release-candidate check.
 
 Detailed engineering evidence:
 
@@ -210,8 +219,9 @@ Detailed engineering evidence:
 - Windows 10, other Chromium browsers, multiple virtual desktops, and all multi-monitor/DPI combinations have not yet been release-qualified.
 - Windows Settings or Task Manager can disable a registered startup app; that
   system-level decision takes precedence over the INI setting.
-- A login launch waits up to 120 seconds for WindowTabs and then remains paused;
-  start WindowTabs and select **Resume management** if that timeout is exceeded.
+- WindowTabs availability is detected by low-frequency process checks; there is
+  no readiness API, so management may begin one configured check interval after
+  the process appears.
 
 ## Project layout
 

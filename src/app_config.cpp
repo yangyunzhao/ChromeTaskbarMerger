@@ -59,7 +59,9 @@ namespace {
            "\r\n"
            "[ChromeTaskbarMerger]\r\n"
            "; Allowed range: 500 to 60000 milliseconds. Default: 2000.\r\n"
-           "scan_interval_ms=2000\r\n";
+           "scan_interval_ms=2000\r\n"
+           "; WindowTabs process check while waiting. Default: 3000.\r\n"
+           "windowtabs_check_interval_ms=3000\r\n";
 }
 
 [[nodiscard]] std::vector<std::string> SplitLines(
@@ -201,6 +203,7 @@ AppConfigLoadResult LoadAppConfig(const std::filesystem::path& path) {
 
     bool in_supported_section = false;
     bool scan_interval_seen = false;
+    bool windowtabs_check_interval_seen = false;
     bool start_with_windows_seen = false;
     std::string line;
     std::size_t line_number = 0;
@@ -257,33 +260,57 @@ AppConfigLoadResult LoadAppConfig(const std::filesystem::path& path) {
             continue;
         }
 
-        if (key != "scan_interval_ms") {
+        const bool is_scan_interval = key == "scan_interval_ms";
+        const bool is_windowtabs_check_interval =
+            key == "windowtabs_check_interval_ms";
+        if (!is_scan_interval && !is_windowtabs_check_interval) {
             result.warnings.push_back(LineWarning(
                 line_number, L"unknown key; the line was ignored."));
             continue;
         }
-        if (scan_interval_seen) {
+        bool& interval_seen = is_scan_interval
+                                  ? scan_interval_seen
+                                  : windowtabs_check_interval_seen;
+        if (interval_seen) {
             result.warnings.push_back(LineWarning(
                 line_number,
-                L"duplicate scan_interval_ms; the last valid value is used."));
+                is_scan_interval
+                    ? L"duplicate scan_interval_ms; the last valid value is "
+                      L"used."
+                    : L"duplicate windowtabs_check_interval_ms; the last "
+                      L"valid value is used."));
         }
-        scan_interval_seen = true;
+        interval_seen = true;
 
         std::int64_t milliseconds = 0;
         const auto parsed = std::from_chars(
             value.data(), value.data() + value.size(), milliseconds);
+        const std::chrono::milliseconds minimum =
+            is_scan_interval ? kMinimumScanInterval
+                             : kMinimumWindowTabsCheckInterval;
+        const std::chrono::milliseconds maximum =
+            is_scan_interval ? kMaximumScanInterval
+                             : kMaximumWindowTabsCheckInterval;
         if (parsed.ec != std::errc{} ||
             parsed.ptr != value.data() + value.size() ||
-            milliseconds < kMinimumScanInterval.count() ||
-            milliseconds > kMaximumScanInterval.count()) {
+            milliseconds < minimum.count() ||
+            milliseconds > maximum.count()) {
             result.warnings.push_back(LineWarning(
                 line_number,
-                L"scan_interval_ms must be an integer from 500 to 60000; "
-                L"the previous value is kept."));
+                is_scan_interval
+                    ? L"scan_interval_ms must be an integer from 500 to 60000; "
+                      L"the previous value is kept."
+                    : L"windowtabs_check_interval_ms must be an integer from "
+                      L"500 to 60000; the previous value is kept."));
             continue;
         }
-        result.config.scan_interval =
-            std::chrono::milliseconds(milliseconds);
+        if (is_scan_interval) {
+            result.config.scan_interval =
+                std::chrono::milliseconds(milliseconds);
+        } else {
+            result.config.windowtabs_check_interval =
+                std::chrono::milliseconds(milliseconds);
+        }
     }
 
     if (input.bad()) {

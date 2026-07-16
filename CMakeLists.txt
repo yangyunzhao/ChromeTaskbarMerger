@@ -73,6 +73,8 @@ add_library(
         src/fixed_entry_manager.h
         src/logger.cpp
         src/logger.h
+        src/management_state.cpp
+        src/management_state.h
         src/process_identity.cpp
         src/process_identity.h
         src/recovery_journal.cpp
@@ -83,8 +85,6 @@ add_library(
         src/scan_schedule.h
         src/single_instance.cpp
         src/single_instance.h
-        src/startup_wait.cpp
-        src/startup_wait.h
         src/taskbar_controller.cpp
         src/taskbar_controller.h
         src/taskbar_experiment.cpp

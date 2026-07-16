@@ -5,9 +5,9 @@
 #include "ctm/version.h"
 #include "fixed_entry_manager.h"
 #include "logger.h"
+#include "management_state.h"
 #include "recovery_journal.h"
 #include "single_instance.h"
-#include "startup_wait.h"
 #include "taskbar_controller.h"
 #include "windowtabs_presence.h"
 
@@ -28,8 +28,7 @@ namespace ctm {
 namespace {
 
 constexpr UINT kTrayCallbackMessage = WM_APP + 10;
-constexpr UINT_PTR kScanTimerId = 1;
-constexpr UINT_PTR kStartupWaitTimerId = 2;
+constexpr UINT_PTR kLifecycleTimerId = 1;
 constexpr UINT kTrayIconId = 1;
 constexpr int kApplicationIconResourceId = 101;
 
@@ -116,14 +115,12 @@ public:
                     const AppConfig& config,
                     std::filesystem::path recovery_path,
                     std::filesystem::path configuration_path,
-                    std::filesystem::path executable_path,
-                    const bool launched_at_login)
+                    std::filesystem::path executable_path)
         : instance_(instance),
           logger_(logger),
           config_(config),
           configuration_path_(std::move(configuration_path)),
           executable_path_(std::move(executable_path)),
-          launched_at_login_(launched_at_login),
           recovery_journal_(std::move(recovery_path)),
           manager_(&controller_, &recovery_journal_) {}
 
@@ -146,21 +143,18 @@ public:
         const TaskbarOperationResult initialization =
             controller_.InitializeTaskbarList();
         if (!initialization.succeeded) {
-            recovery_required_ = true;
-            management_enabled_ = false;
+            management_state_.RequireRecovery();
             LogError(L"ITaskbarList initialization failed: " +
                      initialization.message);
             ShowNotification(
-                L"ChromeTaskbarMerger",
-                L"任务栏接口初始化失败，管理已暂停。",
+                L"需要恢复",
+                L"任务栏接口初始化失败，请使用“恢复全部 Chrome 按钮”。",
                 NIIF_ERROR);
         } else {
             InitializeRecoveryAndManagement();
         }
 
-        UpdateTimer();
-        UpdateStartupWaitTimer();
-        UpdateTrayTooltip();
+        static_cast<void>(RefreshLifecycle(L"startup initialization"));
 
         MSG message{};
         int exit_code = 0;
@@ -370,8 +364,7 @@ private:
     void InitializeRecoveryAndManagement() {
         const RecoveryLoadResult load = recovery_journal_.Load();
         if (!load.succeeded) {
-            recovery_required_ = true;
-            management_enabled_ = false;
+            management_state_.RequireRecovery();
             LogError(L"Recovery journal validation failed: " +
                      load.error_message);
             ShowNotification(
@@ -383,8 +376,7 @@ private:
 
         std::wstring adopt_error;
         if (!manager_.AdoptRecoveryStates(load.states, &adopt_error)) {
-            recovery_required_ = true;
-            management_enabled_ = false;
+            management_state_.RequireRecovery();
             LogError(L"Adopting persisted recovery state failed: " +
                      adopt_error);
             return;
@@ -392,8 +384,7 @@ private:
 
         if (manager_.removed_window_count() != 0 &&
             !RestoreTracked(L"Startup persisted-state restoration", true)) {
-            recovery_required_ = true;
-            management_enabled_ = false;
+            management_state_.RequireRecovery();
             ShowNotification(
                 L"恢复未完成",
                 L"上次会话的任务栏状态未能完全恢复，管理已暂停。",
@@ -401,35 +392,33 @@ private:
             return;
         }
 
-        if (launched_at_login_) {
-            const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
-            if (!windowtabs.query_succeeded || !windowtabs.running) {
-                management_enabled_ = false;
-                startup_wait_schedule_.Start(
-                    StartupWaitSchedule::Clock::now());
-                if (windowtabs.query_succeeded) {
-                    LogInfo(
-                        L"Automatic login launch is waiting for "
-                        L"WindowTabs.exe.");
-                } else {
-                    LogError(
-                        L"WindowTabs detection failed during automatic login "
-                        L"launch with Win32 error " +
-                        std::to_wstring(windowtabs.error_code) +
-                        L"; startup waiting will retry.");
-                }
-                ShowNotification(
-                    L"正在等待 WindowTabs",
-                    L"WindowTabs 就绪后将自动开始任务栏管理。",
-                    NIIF_INFO);
-                return;
+        const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
+        const bool windowtabs_available =
+            windowtabs.query_succeeded && windowtabs.running;
+        management_state_.CompleteInitialization(windowtabs_available);
+        if (!windowtabs_available) {
+            if (windowtabs.query_succeeded) {
+                LogInfo(
+                    L"WindowTabs.exe is not running; continuous prerequisite "
+                    L"waiting started.");
+            } else {
+                LogError(
+                    L"WindowTabs detection failed during initialization with "
+                    L"Win32 error " +
+                    std::to_wstring(windowtabs.error_code) +
+                    L"; prerequisite waiting will retry.");
             }
+            ShowNotification(
+                L"正在等待 WindowTabs",
+                L"WindowTabs 就绪后将自动开始任务栏管理。",
+                NIIF_INFO);
+            return;
         }
 
-        management_enabled_ = true;
         if (!Synchronize(L"Startup synchronization", true)) {
-            management_enabled_ = false;
-        } else if (!launched_at_login_) {
+            return;
+        }
+        if (management_state_.managing()) {
             ShowNotification(
                 L"ChromeTaskbarMerger",
                 L"任务栏单入口管理已启动。",
@@ -439,7 +428,7 @@ private:
 
     [[nodiscard]] bool Synchronize(const std::wstring_view label,
                                    const bool notify_on_failure) {
-        if (!management_enabled_) {
+        if (!management_state_.managing()) {
             return true;
         }
 
@@ -447,20 +436,36 @@ private:
         if (!windowtabs.query_succeeded || !windowtabs.running) {
             const bool restored = RestoreTracked(
                 L"WindowTabs prerequisite restoration", true);
-            management_enabled_ = false;
-            recovery_required_ = !restored;
-            UpdateTimer();
-            UpdateTrayTooltip();
-            LogError(
-                windowtabs.query_succeeded
-                    ? L"WindowTabs.exe is not running; management paused."
-                    : L"WindowTabs process detection failed with Win32 error " +
-                          std::to_wstring(windowtabs.error_code) + L'.');
-            if (notify_on_failure) {
+            management_state_.WindowTabsBecameUnavailable(restored);
+            const bool lifecycle_ready = RefreshLifecycle(
+                L"WindowTabs prerequisite became unavailable");
+            if (!restored) {
+                LogError(
+                    L"WindowTabs became unavailable and taskbar restoration "
+                    L"did not complete; recovery is required.");
+            } else if (!lifecycle_ready ||
+                       !management_state_.waiting_for_windowtabs()) {
+                LogError(
+                    L"WindowTabs became unavailable, but continuous waiting "
+                    L"could not be started.");
+            } else {
+                LogError(
+                    windowtabs.query_succeeded
+                        ? L"WindowTabs.exe is not running; management is "
+                          L"waiting for it to restart."
+                        : L"WindowTabs process detection failed with Win32 "
+                          L"error " +
+                              std::to_wstring(windowtabs.error_code) +
+                              L"; management is waiting and will retry.");
+            }
+            if (notify_on_failure &&
+                (management_state_.waiting_for_windowtabs() || !restored)) {
                 ShowNotification(
-                    L"管理已暂停",
-                    L"WindowTabs 不可用；本程序修改的按钮已尝试恢复。",
-                    NIIF_WARNING);
+                    restored ? L"正在等待 WindowTabs" : L"恢复未完成",
+                    restored
+                        ? L"WindowTabs 不可用；按钮已恢复，将在其重启后自动管理。"
+                        : L"WindowTabs 不可用，且按钮未能完全恢复，请查看日志。",
+                    restored ? NIIF_WARNING : NIIF_ERROR);
             }
             return false;
         }
@@ -471,15 +476,16 @@ private:
                      std::to_wstring(scan.error_code) + L'.');
             const bool restored = RestoreTracked(
                 L"Enumeration failure restoration", true);
-            management_enabled_ = false;
-            recovery_required_ = !restored;
-            UpdateTimer();
-            UpdateTrayTooltip();
+            management_state_.OperationFailed(restored);
+            static_cast<void>(RefreshLifecycle(
+                L"Chrome window enumeration failure"));
             if (notify_on_failure) {
                 ShowNotification(
-                    L"管理已暂停",
-                    L"Chrome 窗口扫描失败。",
-                    NIIF_ERROR);
+                    restored ? L"管理异常暂停" : L"恢复未完成",
+                    restored
+                        ? L"Chrome 窗口扫描失败，可从托盘尝试恢复管理。"
+                        : L"Chrome 窗口扫描失败，且按钮未能完全恢复。",
+                    restored ? NIIF_WARNING : NIIF_ERROR);
             }
             return false;
         }
@@ -497,14 +503,16 @@ private:
         if (!report.succeeded) {
             const bool restored = RestoreTracked(
                 L"Synchronization failure restoration", true);
-            management_enabled_ = false;
-            recovery_required_ = !restored;
-            UpdateTimer();
+            management_state_.OperationFailed(restored);
+            static_cast<void>(RefreshLifecycle(
+                L"taskbar synchronization failure"));
             if (notify_on_failure) {
                 ShowNotification(
-                    L"管理已暂停",
-                    L"同步失败，已尝试恢复任务栏按钮。",
-                    NIIF_ERROR);
+                    restored ? L"管理异常暂停" : L"恢复未完成",
+                    restored
+                        ? L"同步失败，按钮已恢复，可从托盘尝试恢复管理。"
+                        : L"同步失败，且按钮未能完全恢复，请查看日志。",
+                    restored ? NIIF_WARNING : NIIF_ERROR);
             }
         }
         UpdateTrayTooltip();
@@ -529,10 +537,7 @@ private:
     }
 
     [[nodiscard]] bool ForceRestoreAll() {
-        startup_wait_schedule_.Stop();
-        UpdateStartupWaitTimer();
-        management_enabled_ = false;
-        UpdateTimer();
+        StopLifecycleTimer();
         bool succeeded = RestoreTracked(
             L"Explicit tracked-state restoration", true);
 
@@ -571,8 +576,8 @@ private:
         } else {
             succeeded = false;
         }
-        recovery_required_ = !succeeded;
-        UpdateTrayTooltip();
+        management_state_.ExplicitRestoreCompleted(succeeded);
+        static_cast<void>(RefreshLifecycle(L"explicit restore-all completed"));
         ShowNotification(
             succeeded ? L"恢复完成" : L"恢复未完成",
             succeeded
@@ -582,107 +587,132 @@ private:
         return succeeded;
     }
 
-    bool UpdateStartupWaitTimer() {
+    void StopLifecycleTimer() noexcept {
+        if (window_ != nullptr) {
+            KillTimer(window_, kLifecycleTimerId);
+        }
+    }
+
+    [[nodiscard]] bool UpdateLifecycleTimer() {
         if (window_ == nullptr) {
             return false;
         }
-        KillTimer(window_, kStartupWaitTimerId);
-        if (!startup_wait_schedule_.active()) {
+        StopLifecycleTimer();
+
+        std::chrono::milliseconds interval{};
+        std::wstring_view timer_name;
+        if (management_state_.managing()) {
+            interval = config_.scan_interval;
+            timer_name = L"Chrome lifecycle scan";
+        } else if (management_state_.waiting_for_windowtabs()) {
+            interval = config_.windowtabs_check_interval;
+            timer_name = L"WindowTabs prerequisite check";
+        } else {
             return true;
         }
 
         SetLastError(ERROR_SUCCESS);
         if (SetTimer(
-                window_, kStartupWaitTimerId,
-                static_cast<UINT>(
-                    startup_wait_schedule_.retry_interval().count()),
+                window_, kLifecycleTimerId,
+                static_cast<UINT>(interval.count()),
                 nullptr) != 0) {
             return true;
         }
 
         const DWORD error_code = GetLastError();
-        startup_wait_schedule_.Stop();
+        const bool was_managing = management_state_.managing();
+        const bool restored =
+            !was_managing ||
+            RestoreTracked(L"Lifecycle-timer failure restoration", true);
+        management_state_.OperationFailed(restored);
         LogError(
-            L"Creating the WindowTabs startup-wait timer failed with Win32 "
-            L"error " +
-            std::to_wstring(error_code) + L'.');
-        UpdateTrayTooltip();
+            L"Creating the " + std::wstring(timer_name) +
+            L" timer failed with Win32 error " +
+            std::to_wstring(error_code) + L"; state=" +
+            std::wstring(ManagementStateLogName(management_state_.state())) +
+            L'.');
         ShowNotification(
-            L"自动启动等待失败",
-            L"无法等待 WindowTabs，任务栏管理保持暂停。",
-            NIIF_WARNING);
+            restored ? L"监控已暂停" : L"恢复未完成",
+            restored
+                ? L"无法创建生命周期定时器，可从托盘尝试恢复管理。"
+                : L"定时器创建失败，且按钮未能完全恢复，请查看日志。",
+            restored ? NIIF_WARNING : NIIF_ERROR);
         return false;
     }
 
-    void HandleStartupWaitTimer() {
-        if (!startup_wait_schedule_.active()) {
+    [[nodiscard]] bool RefreshLifecycle(const std::wstring_view reason) {
+        const bool timer_succeeded = UpdateLifecycleTimer();
+        LogInfo(
+            L"Management state applied: " +
+            std::wstring(ManagementStateLogName(management_state_.state())) +
+            L"; reason=" + std::wstring(reason) + L'.');
+        UpdateTrayTooltip();
+        return timer_succeeded;
+    }
+
+    void HandleWindowTabsCheck(const bool notify_if_still_waiting) {
+        if (!management_state_.waiting_for_windowtabs()) {
             return;
         }
-        const StartupWaitSchedule::TimePoint now =
-            StartupWaitSchedule::Clock::now();
-        if (startup_wait_schedule_.HasTimedOut(now)) {
-            startup_wait_schedule_.Stop();
-            UpdateStartupWaitTimer();
-            UpdateTrayTooltip();
-            LogInfo(
-                L"Automatic login launch timed out waiting for "
-                L"WindowTabs.exe; management remains paused.");
-            ShowNotification(
-                L"等待 WindowTabs 超时",
-                L"任务栏管理保持暂停；启动 WindowTabs 后可选择“恢复管理”。",
-                NIIF_WARNING);
-            return;
-        }
-        if (!startup_wait_schedule_.IsAttemptDue(now)) {
-            return;
-        }
-        startup_wait_schedule_.MarkAttempted(now);
 
         const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
         if (!windowtabs.query_succeeded) {
             LogError(
-                L"WindowTabs detection failed during startup waiting with "
+                L"WindowTabs detection failed while waiting with "
                 L"Win32 error " +
                 std::to_wstring(windowtabs.error_code) + L'.');
+            if (notify_if_still_waiting) {
+                ShowNotification(
+                    L"WindowTabs 检测失败",
+                    L"程序将继续自动重试，请查看日志。",
+                    NIIF_WARNING);
+            }
             return;
         }
         if (!windowtabs.running) {
+            if (notify_if_still_waiting) {
+                ShowNotification(
+                    L"仍在等待 WindowTabs",
+                    L"检测到 WindowTabs 后将自动开始管理。",
+                    NIIF_INFO);
+            }
             return;
         }
 
-        startup_wait_schedule_.Stop();
-        UpdateStartupWaitTimer();
-        management_enabled_ = true;
-        if (Synchronize(L"Delayed startup synchronization", true) &&
-            UpdateTimer()) {
+        if (!management_state_.WindowTabsBecameAvailable()) {
+            return;
+        }
+        if (!RefreshLifecycle(L"WindowTabs became available")) {
+            return;
+        }
+        if (Synchronize(L"WindowTabs availability synchronization", true) &&
+            management_state_.managing()) {
             ShowNotification(
-                L"自动启动完成",
+                L"自动恢复管理",
                 L"WindowTabs 已就绪，任务栏单入口管理已启动。",
                 NIIF_INFO);
         }
-        UpdateTrayTooltip();
     }
 
     void PauseManagement() {
-        if (startup_wait_schedule_.active()) {
-            startup_wait_schedule_.Stop();
-            UpdateStartupWaitTimer();
-            UpdateTrayTooltip();
-            LogInfo(L"Automatic WindowTabs startup waiting was canceled.");
+        if (!management_state_.can_pause()) {
+            return;
+        }
+        if (management_state_.waiting_for_windowtabs()) {
+            management_state_.PauseByUser(true);
+            static_cast<void>(RefreshLifecycle(
+                L"user canceled WindowTabs waiting"));
+            LogInfo(L"Continuous WindowTabs waiting was canceled by the user.");
             ShowNotification(
                 L"管理已暂停",
                 L"已取消等待 WindowTabs。",
                 NIIF_INFO);
             return;
         }
-        if (!management_enabled_) {
-            return;
-        }
+
         const bool restored = RestoreTracked(L"Tray pause restoration", true);
-        management_enabled_ = false;
-        recovery_required_ = !restored;
-        UpdateTimer();
-        UpdateTrayTooltip();
+        management_state_.PauseByUser(restored);
+        static_cast<void>(RefreshLifecycle(L"user requested pause"));
         ShowNotification(
             restored ? L"管理已暂停" : L"暂停恢复未完成",
             restored
@@ -692,30 +722,46 @@ private:
     }
 
     void ResumeManagement() {
-        if (management_enabled_) {
-            return;
-        }
-        if (recovery_required_) {
+        if (management_state_.recovery_required()) {
             ShowNotification(
                 L"需要先恢复",
                 L"请先使用“恢复全部 Chrome 按钮”，再恢复管理。",
                 NIIF_WARNING);
             return;
         }
-        if (startup_wait_schedule_.active()) {
-            startup_wait_schedule_.Stop();
-            UpdateStartupWaitTimer();
+        if (!management_state_.can_resume()) {
+            return;
         }
-        recovery_required_ = false;
-        management_enabled_ = true;
+
+        const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
+        if (!windowtabs.query_succeeded) {
+            LogError(
+                L"WindowTabs detection failed during resume with Win32 error " +
+                std::to_wstring(windowtabs.error_code) +
+                L"; continuous waiting will retry.");
+        }
+        const bool available =
+            windowtabs.query_succeeded && windowtabs.running;
+        if (!management_state_.ResumeRequested(available)) {
+            return;
+        }
+        if (!RefreshLifecycle(L"user requested resume")) {
+            return;
+        }
+        if (management_state_.waiting_for_windowtabs()) {
+            ShowNotification(
+                L"正在等待 WindowTabs",
+                L"WindowTabs 就绪后将自动恢复管理。",
+                NIIF_INFO);
+            return;
+        }
         if (Synchronize(L"Tray resume synchronization", true) &&
-            UpdateTimer()) {
+            management_state_.managing()) {
             ShowNotification(
                 L"管理已恢复",
                 L"Chrome 任务栏单入口规则已重新应用。",
                 NIIF_INFO);
         }
-        UpdateTrayTooltip();
     }
 
     void HandleTaskbarCreated() {
@@ -729,41 +775,37 @@ private:
         controller_.Shutdown();
         std::wstring reset_error;
         if (!manager_.ResetAfterTaskbarRecreation(&reset_error)) {
-            management_enabled_ = false;
-            recovery_required_ = true;
+            management_state_.RequireRecovery();
             LogError(L"Resetting recovery state after TaskbarCreated failed: " +
                      reset_error);
-            UpdateTimer();
-            UpdateTrayTooltip();
+            static_cast<void>(RefreshLifecycle(
+                L"taskbar recreation recovery reset failure"));
             return;
         }
 
         const TaskbarOperationResult initialization =
             controller_.InitializeTaskbarList();
         if (!initialization.succeeded) {
-            management_enabled_ = false;
-            recovery_required_ = true;
+            management_state_.OperationFailed(true);
             LogError(L"Reinitializing ITaskbarList after TaskbarCreated failed: " +
                      initialization.message);
-            UpdateTimer();
-            UpdateTrayTooltip();
+            static_cast<void>(RefreshLifecycle(
+                L"taskbar recreation controller failure"));
             return;
         }
-        if (management_enabled_) {
+        if (management_state_.managing()) {
             static_cast<void>(Synchronize(
                 L"TaskbarCreated synchronization", true));
         }
-        UpdateTrayTooltip();
+        static_cast<void>(RefreshLifecycle(L"taskbar recreation completed"));
     }
 
     void RequestExit() {
-        startup_wait_schedule_.Stop();
-        UpdateStartupWaitTimer();
+        StopLifecycleTimer();
         if (!RestoreTracked(L"Tray normal-exit restoration", true)) {
-            recovery_required_ = true;
-            management_enabled_ = false;
-            UpdateTimer();
-            UpdateTrayTooltip();
+            management_state_.RequireRecovery();
+            static_cast<void>(RefreshLifecycle(
+                L"normal-exit restoration failure"));
             ShowNotification(
                 L"暂不能退出",
                 L"任务栏恢复未完成。请查看日志或使用“恢复全部”。",
@@ -870,35 +912,44 @@ private:
             MB_OK | MB_ICONINFORMATION);
     }
 
+    [[nodiscard]] std::wstring_view ManagementStateDisplayName() const noexcept {
+        switch (management_state_.state()) {
+            case ManagementState::Initializing:
+                return L"正在初始化";
+            case ManagementState::WaitingForWindowTabs:
+                return L"等待 WindowTabs";
+            case ManagementState::Managing:
+                return L"管理中";
+            case ManagementState::PausedByUser:
+                return L"已暂停（用户）";
+            case ManagementState::PausedByError:
+                return L"已暂停（异常）";
+            case ManagementState::RecoveryRequired:
+                return L"需要恢复";
+        }
+        return L"未知状态";
+    }
+
     void ShowContextMenu(POINT point) {
         HMENU menu = CreatePopupMenu();
         if (menu == nullptr) {
             return;
         }
-        const std::wstring status = recovery_required_
-                                        ? L"状态：需要恢复"
-                                        : (startup_wait_schedule_.active()
-                                               ? L"状态：等待 WindowTabs"
-                                               : (management_enabled_
-                                                      ? L"状态：管理中"
-                                                      : L"状态：已暂停"));
+        const std::wstring status =
+            L"状态：" + std::wstring(ManagementStateDisplayName());
         AppendMenuW(menu, MF_STRING | MF_DISABLED, kMenuStatus, status.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuScanNow, L"立即重新扫描");
         AppendMenuW(
             menu,
             MF_STRING |
-                (management_enabled_ || startup_wait_schedule_.active()
-                     ? MF_ENABLED
-                     : MF_GRAYED),
+                (management_state_.can_pause() ? MF_ENABLED : MF_GRAYED),
             kMenuPause,
             L"暂停管理");
         AppendMenuW(
             menu,
             MF_STRING |
-                (!management_enabled_ && !recovery_required_
-                     ? MF_ENABLED
-                     : MF_GRAYED),
+                (management_state_.can_resume() ? MF_ENABLED : MF_GRAYED),
             kMenuResume,
             L"恢复管理");
         AppendMenuW(menu, MF_STRING, kMenuRestoreAll, L"恢复全部 Chrome 按钮");
@@ -932,9 +983,11 @@ private:
     void HandleMenuCommand(const UINT command) {
         switch (command) {
             case kMenuScanNow:
-                if (management_enabled_) {
+                if (management_state_.managing()) {
                     static_cast<void>(Synchronize(
                         L"Tray manual synchronization", true));
+                } else if (management_state_.waiting_for_windowtabs()) {
+                    HandleWindowTabsCheck(true);
                 } else {
                     const ManageableWindowScan scan = ScanManageableWindows();
                     if (scan.succeeded) {
@@ -989,52 +1042,9 @@ private:
         }
     }
 
-    bool UpdateTimer() {
-        if (window_ == nullptr) {
-            return false;
-        }
-        KillTimer(window_, kScanTimerId);
-        if (!management_enabled_) {
-            return true;
-        }
-
-        SetLastError(ERROR_SUCCESS);
-        if (SetTimer(
-                window_, kScanTimerId,
-                static_cast<UINT>(config_.scan_interval.count()), nullptr) !=
-            0) {
-            return true;
-        }
-
-        const DWORD timer_error = GetLastError();
-        LogError(
-            L"Creating the lifecycle scan timer failed with Win32 error " +
-            std::to_wstring(timer_error) + L"; management is being paused.");
-        management_enabled_ = false;
-        const bool restored = RestoreTracked(
-            L"Scan-timer failure restoration", true);
-        recovery_required_ = !restored;
-        UpdateTrayTooltip();
-        ShowNotification(
-            restored ? L"管理已暂停" : L"恢复未完成",
-            restored
-                ? L"扫描定时器创建失败；任务栏按钮已恢复。"
-                : L"扫描定时器创建失败，且按钮未能完全恢复。",
-            restored ? NIIF_WARNING : NIIF_ERROR);
-        return false;
-    }
-
     [[nodiscard]] std::wstring BuildTooltip() const {
-        std::wstring tooltip = L"ChromeTaskbarMerger - ";
-        if (recovery_required_) {
-            tooltip += L"需要恢复";
-        } else if (startup_wait_schedule_.active()) {
-            tooltip += L"等待 WindowTabs";
-        } else if (management_enabled_) {
-            tooltip += L"管理中";
-        } else {
-            tooltip += L"已暂停";
-        }
+        std::wstring tooltip = L"ChromeTaskbarMerger - " +
+                               std::wstring(ManagementStateDisplayName());
         tooltip += L" (Chrome " + std::to_wstring(last_window_count_) + L")";
         return tooltip;
     }
@@ -1092,11 +1102,14 @@ private:
         }
         switch (message) {
             case WM_TIMER:
-                if (wparam == kScanTimerId && management_enabled_) {
-                    static_cast<void>(Synchronize(
-                        L"Periodic lifecycle synchronization", true));
-                } else if (wparam == kStartupWaitTimerId) {
-                    HandleStartupWaitTimer();
+                if (wparam == kLifecycleTimerId) {
+                    if (management_state_.managing()) {
+                        static_cast<void>(Synchronize(
+                            L"Periodic lifecycle synchronization", true));
+                    } else if (
+                        management_state_.waiting_for_windowtabs()) {
+                        HandleWindowTabsCheck(false);
+                    }
                 }
                 return 0;
 
@@ -1107,9 +1120,12 @@ private:
                 }
                 if (wparam == static_cast<WPARAM>(
                                   ExistingInstanceCommand::Rescan)) {
-                    if (management_enabled_) {
+                    if (management_state_.managing()) {
                         static_cast<void>(Synchronize(
                             L"Second-instance synchronization", true));
+                    } else if (
+                        management_state_.waiting_for_windowtabs()) {
+                        HandleWindowTabsCheck(false);
                     } else {
                         const ManageableWindowScan scan =
                             ScanManageableWindows();
@@ -1196,17 +1212,14 @@ private:
     AppConfig config_;
     std::filesystem::path configuration_path_;
     std::filesystem::path executable_path_;
-    bool launched_at_login_ = false;
     HWND window_ = nullptr;
     UINT taskbar_created_message_ = 0;
     HICON large_icon_ = nullptr;
     HICON small_icon_ = nullptr;
     bool tray_icon_added_ = false;
-    bool management_enabled_ = false;
-    bool recovery_required_ = false;
     std::size_t last_window_count_ = 0;
     AutoStartRegistry auto_start_registry_;
-    StartupWaitSchedule startup_wait_schedule_;
+    ManagementStateMachine management_state_;
     TaskbarController controller_;
     RecoveryJournal recovery_journal_;
     FixedEntryManager manager_;
@@ -1343,8 +1356,7 @@ int RunTrayApplication(
         config,
         recovery_journal_path,
         configuration_path,
-        executable_path,
-        launched_at_login);
+        executable_path);
     return application.Run();
 }
 

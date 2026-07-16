@@ -16,7 +16,7 @@
   <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4?logo=windows11&logoColor=white">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.24%2B-064F8C?logo=cmake&logoColor=white">
-  <img alt="状态" src="https://img.shields.io/badge/status-1.0.0--rc2-orange">
+  <img alt="状态" src="https://img.shields.io/badge/status-1.0.0--rc3-orange">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -39,6 +39,7 @@ ChromeTaskbarMerger 是一个轻量级 Windows 原生工具，面向同时使用
 - 确保同一时间只有一套管理实例运行。
 - 支持可配置的低频扫描，不使用忙循环。
 - 支持当前用户登录 Windows 时自动启动，可从托盘或便携 INI 配置。
+- WindowTabs 不可用时持续等待，并在其启动或重启后自动恢复管理。
 - 每次移除任务栏按钮前先写入恢复意图。
 - 恢复前验证 HWND、PID、TID、进程创建时间和窗口类。
 - 提供独立的 `--restore-all` 恢复命令。
@@ -83,9 +84,9 @@ cd ChromeTaskbarMerger
 
 | 操作 | 行为 |
 | --- | --- |
-| 立即重新扫描 | 立即枚举 Chrome 窗口；管理启用时重新应用规则。 |
-| 暂停管理 | 恢复已跟踪的 Chrome 按钮并停止自动扫描。 |
-| 恢复管理 | 重新检查前置条件并应用单入口规则。 |
+| 立即重新扫描 | 暂停时只读枚举 Chrome，管理中执行同步，等待时立即检查 WindowTabs。 |
+| 暂停管理 | 恢复已跟踪按钮或取消依赖等待，并记录为明确的用户暂停。 |
+| 恢复管理 | 重新检查前置条件；WindowTabs 已运行时立即管理，否则进入持续等待。 |
 | 恢复全部 Chrome 按钮 | 对已跟踪和当前可识别的 Chrome 窗口执行安全恢复，随后保持暂停。 |
 | 随 Windows 登录自动启动 | 原子更新便携配置和当前用户的 Windows 启动注册项。 |
 | 打开日志目录 | 打开当前用户的日志目录。 |
@@ -99,15 +100,17 @@ cd ChromeTaskbarMerger
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+windowtabs_check_interval_ms=3000
 start_with_windows=false
 ```
 
-`scan_interval_ms` 允许范围为 500～60000 毫秒；`start_with_windows` 接受
-`true` 或 `false`，默认关闭。
+两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制管理中的 Chrome
+扫描，`windowtabs_check_interval_ms` 控制等待期间的 WindowTabs 检测；
+`start_with_windows` 接受 `true` 或 `false`，默认关闭。
 
 通过托盘修改会立即生效并保存 INI。直接编辑文件只在进程启动时读取：必须从托盘彻底退出后重新运行。已有实例运行时再次双击 EXE 只会请求重新扫描，不算重启。手工将 `false` 改为 `true` 后，需要手动重新运行一次，程序才能创建当前用户的 Windows `Run` 启动项。
 
-这里的自动启动是“当前用户登录后启动”，不是系统服务，无需管理员权限。如果 WindowTabs 尚未启动，程序会在托盘中等待并重试，最长 120 秒，超时后保持暂停。移动便携目录后，需要从新位置手动运行一次以修复注册的 EXE 路径。
+这里的自动启动是“当前用户登录后启动”，不是系统服务，无需管理员权限。手动启动和登录启动使用同一套前置条件逻辑：WindowTabs 不可用时，程序会持续显示“等待 WindowTabs”，不移除 Chrome 按钮；WindowTabs 出现后自动进入管理。管理期间 WindowTabs 退出时会先恢复按钮，重启后自动恢复管理。用户主动暂停则始终保持暂停。移动便携目录后，需要从新位置手动运行一次以修复注册的 EXE 路径。
 
 ## 日志和异常恢复
 
@@ -182,9 +185,9 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## 验证状态
 
-版本 `1.0.0-rc2` 在 Debug 和 Release 配置下均通过全新构建和 5/5 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复和启动等待调度。
+版本 `1.0.0-rc3` 在 Debug 和 Release 配置下均通过全新构建和 6/6 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复、配置校验和管理状态转换。
 
-真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、正常退出恢复和空闲 CPU。Explorer 重启、强制结束恢复及最终便携托盘体验仍属于发布候选验收项目。
+真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、Explorer 重启、强制结束恢复、正常退出恢复、便携托盘体验和空闲 CPU。自动进程级联调也确认了 rc3 的“等待 → 管理 → 等待”生命周期；使用真实 WindowTabs 的最终验证仍属于本次发布候选验收项目。
 
 详细工程证据：
 
@@ -198,7 +201,7 @@ ctest --test-dir build -C Release --output-on-failure
 - 任务栏入口保持固定，不会跟随当前活动 Chrome 窗口。
 - Windows 10、其他 Chromium 浏览器、多虚拟桌面及所有多显示器/DPI 组合尚未完成发布验证。
 - Windows 设置或任务管理器可以禁用已注册的启动应用；系统层面的选择优先于 INI 设置。
-- 登录启动最多等待 WindowTabs 120 秒，随后保持暂停；超时后请启动 WindowTabs 并选择“恢复管理”。
+- WindowTabs 可用性通过低频进程检测判断；没有独立的就绪 API，因此从进程出现到开始管理最多可能相差一个配置的检测周期。
 
 ## 项目结构
 

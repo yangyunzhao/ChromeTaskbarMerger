@@ -1,6 +1,6 @@
 # Codex 开发任务：Chrome 多配置文件窗口的任务栏单入口工具（C++）
 
-> 文档状态：Phase 0～Phase 6 已于 2026-07-15 完成开发和验收，`1.0.0-rc1` 已作为 GitHub 预发行版发布。2026-07-16 根据用户要求完成 Phase 7“随 Windows 登录自动启动”的实现和自动验收，目标版本为 `1.0.0-rc2`；真实重新登录行为单独人工验收。
+> 文档状态：Phase 0～Phase 6 已于 2026-07-15 完成开发和验收，`1.0.0-rc1` 已作为 GitHub 预发行版发布。2026-07-16 完成 Phase 7“随 Windows 登录自动启动”的 rc2 实现；用户实测发现普通启动不会在 WindowTabs 后启动时自动恢复，因此 Phase 8 采用明确状态机统一依赖等待行为，目标版本为 `1.0.0-rc3`。
 >
 > V1 范围修订（2026-07-15）：第一版以“任务栏只保留一个 Chrome 入口”为核心目标。任务栏入口不要求跟随当前活动 Chrome；WindowTabs 和 Alt+Tab 的完整兼容性降为尽力而为，但 Chrome 窗口必须保持打开、可到达和可操作，且所有修改必须能够恢复。
 
@@ -121,7 +121,7 @@ V1 优先级从高到低为：
 
 ## 5. 分阶段开发与验收计划
 
-初始 V1 按 Phase 0 到 Phase 6 顺序完成。Phase 7 是用户在 `1.0.0-rc1` 发布后选定的增强；其他可选增强顺延到 Phase 8。前一 Phase 未通过时，不进入后一 Phase。
+初始 V1 按 Phase 0 到 Phase 6 顺序完成。Phase 7 是用户在 `1.0.0-rc1` 发布后选定的自动启动增强；Phase 8 修复并统一 WindowTabs 依赖生命周期；其他可选增强顺延到 Phase 9。前一 Phase 未通过时，不进入后一 Phase。
 
 ### 5.1 通用验收规则
 
@@ -556,9 +556,55 @@ Codex 自动验收：
 
 2026-07-16 自动验收结果：全新 `build-portable` 中 Debug/Release 均无警告构建，CTest 两种配置均为 5/5；rc2 ZIP 内容、版本资源、x64 GUI、静态 MSVC 运行库、命令行退出码和配置默认值全部通过。临时注册表测试结束后无遗留键，真实 `HKCU\...\Run\ChromeTaskbarMerger` 未被改变。
 
-当前状态：`AUTOMATIC PASS / MANUAL LOGIN PENDING`。
+当前状态：`AUTOMATIC PASS / SUPERSEDED BY PHASE 8 WAITING MODEL`。rc2 的注册和配置能力继续保留，但 120 秒登录专用等待由 Phase 8 的统一持续等待替代。
 
-### Phase 8：后续可选增强
+### Phase 8：WindowTabs 依赖状态机与自动恢复（rc3）
+
+目标：让手动启动和 Windows 登录启动采用相同的 WindowTabs 前置条件行为，避免程序因启动顺序、WindowTabs 临时退出或旧实例存在而永久停在“已暂停”。
+
+实现内容：
+
+- 使用明确状态区分“初始化、等待 WindowTabs、管理中、用户暂停、异常暂停、需要恢复”；
+- 删除由多个布尔值组合出的含糊状态，确保只有“管理中”可以修改任务栏；
+- WindowTabs 不可用时持续低频检测，不设置 120 秒硬超时，也不移除 Chrome 按钮；
+- WindowTabs 启动或重启后自动进入“管理中”；
+- 管理期间 WindowTabs 退出时，先安全恢复已跟踪按钮，再进入等待；
+- 用户主动暂停具有粘性，不能被 WindowTabs 启停自动覆盖；
+- 恢复失败必须进入“需要恢复”，普通“恢复管理”不得绕过；
+- 新增 `windowtabs_check_interval_ms=3000`，允许范围为 500～60000 毫秒；
+- 普通启动、`--autostart`、第二实例重新扫描和托盘“立即重新扫描”共用同一等待检查逻辑；
+- 更新中英文 README、便携说明、配置模板和人工验收计划。
+
+Codex 自动验收：
+
+- 用纯状态机测试覆盖启动等待、自动恢复、退出后重启、用户暂停粘性、异常暂停和恢复门禁；
+- 测试新配置的默认值、合法值、非法值回退及保存时保留；
+- Debug/Release 无警告构建且全部 CTest 通过；
+- 通过可控的 `WindowTabs.exe` 测试进程验证真实托盘进程能够从等待自动切换到管理，并在依赖退出后返回等待；
+- 生成并检查 `1.0.0-rc3` x64 便携目录和 ZIP，确认静态 MSVC 运行库、版本资源及配置内容。
+
+人工验收：
+
+1. WindowTabs 未运行时启动 rc3，确认状态为“等待 WindowTabs”；
+2. 启动 WindowTabs，确认在一个配置检测周期内自动变为“管理中”；
+3. 退出 WindowTabs，确认 Chrome 按钮恢复且状态回到等待；再次启动后自动恢复管理；
+4. 从托盘主动暂停，随后重启 WindowTabs，确认仍保持“已暂停（用户）”；
+5. 选择“恢复管理”，确认 WindowTabs 已运行时立即管理，未运行时进入等待。
+
+通过标准：依赖缺失不会显示为用户暂停或永久停止检测；WindowTabs 重启后无需人工点击即可恢复管理；用户暂停和恢复错误不会被自动恢复覆盖；原有任务栏单入口与安全恢复能力保持通过。
+
+2026-07-16 自动验收结果：全新 `build-portable` 中 Debug/Release 均无警告构建，两种配置均为 6/6 CTest；使用临时同名测试进程完成真实托盘生命周期联调，日志确认 `waiting-for-windowtabs → managing → waiting-for-windowtabs`，依赖退出后的恢复成功且无残留进程。rc3 便携目录和 ZIP 包含 EXE/INI/README/LICENSE，版本资源为 `1.0.0-rc3`，Release 为 x64 Windows GUI 且无动态 VCRUNTIME/MSVCP/ucrtbase 依赖。真实 Windows `Run` 值保持不存在。
+
+候选产物指纹：
+
+```text
+EXE SHA-256: CFB2C0896B42586285ADD998A0B2FA07A3FEB86D36160D7996DFC60CB86CB3BD
+ZIP SHA-256: CA526C57791283447945D537F4E47FDA557AA514D642A7E89D3B49377D62DE59
+```
+
+当前状态：`AUTOMATIC PASS / MANUAL WINDOWTABS VALIDATION PENDING`。
+
+### Phase 9：后续可选增强
 
 以下功能不阻塞 V1：
 

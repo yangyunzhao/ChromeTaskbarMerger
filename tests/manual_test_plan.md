@@ -560,6 +560,8 @@ Copy-Item `
 | Phase 4 | 新建、关闭窗口后的自动同步 | PASS |
 | Phase 5 | Explorer 重启、异常恢复和单实例 | PASS |
 | Phase 6 | 托盘菜单和 Release 便携体验 | PASS |
+| Phase 7 | 随 Windows 登录自动启动 | AUTOMATIC PASS；等待模型由 Phase 8 替代 |
+| Phase 8 | WindowTabs 持续等待与自动恢复 | AUTOMATIC PASS / MANUAL PENDING |
 
 ## Phase 7：随 Windows 登录自动启动（rc2）
 
@@ -621,3 +623,71 @@ ZIP SHA-256: E90F73DAA027763BDC16CCA6F15A593DC6ED6E02EFCBC61AB87D9C97F23197B2
 ```
 
 当前状态：`AUTOMATIC PASS / MANUAL LOGIN PENDING`。
+
+> rc3 说明：以上 120 秒超时步骤是 rc2 的历史验收。Phase 8 改为手动启动和登录启动共用的持续等待，不再要求 WindowTabs 在 120 秒内出现。
+
+## Phase 8：WindowTabs 依赖状态机与自动恢复（rc3）
+
+2026-07-16 用户确认采用方案 B：明确区分“等待 WindowTabs、管理中、用户暂停、异常暂停、需要恢复”，WindowTabs 不可用时持续低频等待，启动或重启后自动恢复管理。
+
+### 自动验收项目
+
+| 项目 | 预期结果 | 当前结果 | 状态 |
+| --- | --- | --- | --- |
+| 状态机 | 等待、自动管理、依赖退出、用户暂停、异常和恢复门禁互不混淆 | 独立状态机测试已覆盖全部转换和恢复状态不可降级 | PASS |
+| 配置 | `windowtabs_check_interval_ms` 默认 3000，范围 500～60000，保存启动设置时不丢失 | 默认、合法、越界回退、原子保存和重载测试通过 | PASS |
+| 普通启动等待 | WindowTabs 不存在时保持运行并进入 `waiting-for-windowtabs` | rc3 Debug 日志确认持续等待，Chrome 修改数为 0 | PASS |
+| 自动恢复 | 测试用同名进程出现后进入 `managing`，退出后恢复并回到等待 | 两次转换均在配置周期内发生；恢复成功、跟踪修改数为 0 | PASS |
+| 安全清理 | 联调结束不存在 ChromeTaskbarMerger/测试 WindowTabs 残留，显式恢复成功 | `--restore-all` 返回 0，两个测试进程均已结束 | PASS |
+| Debug/Release | 两种配置无警告构建，全部 CTest 通过 | 全新 `build-portable` 两种配置均构建成功、6/6 通过 | PASS |
+| 便携产物 | rc3 EXE/INI/README/LICENSE 与 ZIP 完整，版本和静态运行库正确 | 四文件完整；1.0.0-rc3；x64 GUI；无动态 VCRUNTIME/MSVCP/ucrtbase 依赖 | PASS |
+
+### 人工验收步骤
+
+前置条件：使用 rc3 便携版；准备 3 个可安全关闭的普通 Chrome 窗口。测试前确认托盘没有旧版本实例。若按钮异常，先选择“恢复全部 Chrome 按钮”，必要时重启 Windows 资源管理器。
+
+#### A. 启动顺序
+
+1. 完全退出 WindowTabs；
+2. 启动 `ChromeTaskbarMerger.exe`，右键托盘图标，预期显示“状态：等待 WindowTabs”；
+3. 启动 WindowTabs；
+4. 等待 `windowtabs_check_interval_ms` 加少量调度时间，预期自动显示“状态：管理中”，三个 Chrome 窗口收敛为一个任务栏入口。
+
+#### B. WindowTabs 重启
+
+1. 在“管理中”退出 WindowTabs；
+2. 最多等待一个 `scan_interval_ms` 周期，预期 Chrome 按钮全部恢复，状态变为“等待 WindowTabs”；
+3. 再次启动 WindowTabs，预期无需点击菜单即自动回到“管理中”，任务栏再次收敛为一个入口。
+
+#### C. 用户暂停粘性
+
+1. 从托盘选择“暂停管理”，预期状态为“已暂停（用户）”，Chrome 按钮恢复；
+2. 退出并重新启动 WindowTabs，等待至少两个检测周期；
+3. 预期仍为“已暂停（用户）”，不得自动移除按钮；
+4. 选择“恢复管理”：WindowTabs 正在运行时应立即管理；若先退出 WindowTabs，则应进入“等待 WindowTabs”。
+
+#### D. 配置与登录启动回归
+
+1. 确认 INI 中存在 `windowtabs_check_interval_ms=3000`，可临时改为 5000 后彻底退出并重启，确认程序正常等待；
+2. 从托盘启用“随 Windows 登录自动启动”，重新登录 Windows；
+3. 无论 WindowTabs 先启动还是后启动，最终都应自动进入“管理中”；
+4. 测试后按个人偏好恢复检测间隔和自动启动设置。
+
+请按以下格式回报：
+
+```text
+A 启动顺序：通过/失败（现象）
+B WindowTabs 重启：通过/失败（现象）
+C 用户暂停粘性：通过/失败（现象）
+D 配置和登录启动：通过/失败（现象）
+CPU/托盘/Chrome 按钮是否有其他异常：无/说明
+```
+
+本次候选产物指纹：
+
+```text
+EXE SHA-256: CFB2C0896B42586285ADD998A0B2FA07A3FEB86D36160D7996DFC60CB86CB3BD
+ZIP SHA-256: CA526C57791283447945D537F4E47FDA557AA514D642A7E89D3B49377D62DE59
+```
+
+当前状态：`AUTOMATIC PASS / MANUAL WINDOWTABS VALIDATION PENDING`。

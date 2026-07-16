@@ -135,6 +135,10 @@ void TestMissingConfigurationUsesDefaults() {
            "a missing optional configuration should not be an error");
     Expect(result.config.scan_interval == ctm::kDefaultScanInterval,
            "a missing configuration should use the two-second default");
+    Expect(result.config.windowtabs_check_interval ==
+               ctm::kDefaultWindowTabsCheckInterval,
+           "a missing configuration should use the three-second WindowTabs "
+           "check default");
     Expect(!result.config.start_with_windows,
            "a missing configuration should keep login startup disabled");
 }
@@ -148,12 +152,16 @@ void TestValidConfigurationLoadsScanInterval() {
     WriteTextFile(
         path,
         "[ChromeTaskbarMerger]\r\nscan_interval_ms=1250\r\n"
+        "windowtabs_check_interval_ms=1750\r\n"
         "start_with_windows=TrUe\r\n");
     const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
     Expect(result.file_found && result.read_succeeded,
            "a valid configuration should load successfully");
     Expect(result.config.scan_interval == std::chrono::milliseconds(1250),
            "the configured scan interval should be applied");
+    Expect(result.config.windowtabs_check_interval ==
+               std::chrono::milliseconds(1750),
+           "the configured WindowTabs check interval should be applied");
     Expect(result.config.start_with_windows,
            "a case-insensitive true value should enable login startup");
     Expect(result.warnings.empty(),
@@ -171,6 +179,7 @@ void TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration() {
         "; keep this comment\r\n"
         "[ChromeTaskbarMerger]\r\n"
         "scan_interval_ms=1250\r\n"
+        "windowtabs_check_interval_ms=1750\r\n"
         "start_with_windows=false\r\n"
         "start_with_windows=false\r\n"
         "[OtherSection]\r\n"
@@ -185,6 +194,9 @@ void TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration() {
            "the saved true value should load after an application restart");
     Expect(loaded.config.scan_interval == std::chrono::milliseconds(1250),
            "saving startup should preserve the configured scan interval");
+    Expect(loaded.config.windowtabs_check_interval ==
+               std::chrono::milliseconds(1750),
+           "saving startup should preserve the WindowTabs check interval");
 
     const std::string enabled_text = ReadTextFile(path);
     Expect(enabled_text.find("; keep this comment") != std::string::npos &&
@@ -224,6 +236,10 @@ void TestSavingCreatesAMissingPortableConfiguration() {
            "saving should create a missing portable configuration");
     Expect(loaded.config.scan_interval == ctm::kDefaultScanInterval,
            "a newly created configuration should retain the scan default");
+    Expect(loaded.config.windowtabs_check_interval ==
+               ctm::kDefaultWindowTabsCheckInterval,
+           "a newly created configuration should retain the WindowTabs check "
+           "default");
 }
 
 void TestInvalidStartWithWindowsValueFailsClosed() {
@@ -250,11 +266,15 @@ void TestInvalidConfigurationFallsBackSafely() {
     const std::filesystem::path path = directory.path() / L"invalid.ini";
     WriteTextFile(
         path,
-        "[ChromeTaskbarMerger]\nscan_interval_ms=10\nunknown=true\n");
+        "[ChromeTaskbarMerger]\nscan_interval_ms=10\n"
+        "windowtabs_check_interval_ms=70000\nunknown=true\n");
     const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
     Expect(result.config.scan_interval == ctm::kDefaultScanInterval,
            "an unsafe scan interval should retain the default");
-    Expect(result.warnings.size() == 2,
+    Expect(result.config.windowtabs_check_interval ==
+               ctm::kDefaultWindowTabsCheckInterval,
+           "an unsafe WindowTabs check interval should retain the default");
+    Expect(result.warnings.size() == 3,
            "invalid and unknown configuration values should be explained");
 }
 

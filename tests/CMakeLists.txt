@@ -82,3 +82,20 @@ add_test(
     NAME auto_start
     COMMAND ChromeTaskbarMergerAutoStartTests
 )
+
+add_executable(
+    ChromeTaskbarMergerManagementStateTests
+    management_state_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerManagementStateTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerManagementStateTests)
+
+add_test(
+    NAME management_state
+    COMMAND ChromeTaskbarMergerManagementStateTests
+)

@@ -1,4 +1,4 @@
-# ChromeTaskbarMerger 1.0.0-rc2 portable x64
+# ChromeTaskbarMerger 1.0.0-rc3 portable x64
 
 ## 使用前提
 
@@ -30,12 +30,13 @@
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+windowtabs_check_interval_ms=3000
 start_with_windows=false
 ```
 
-扫描间隔允许范围为 500～60000 毫秒。`start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会立即保存并应用；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
+两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制管理中的 Chrome 扫描，`windowtabs_check_interval_ms` 控制等待期间的 WindowTabs 检测。`start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会立即保存并应用；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
 
-自动启动发生在当前用户登录后，无需管理员权限。WindowTabs 启动较慢时，程序会在托盘中等待并重试最多 120 秒。移动便携目录后，需要从新位置手动运行一次以修复启动路径。
+无论程序是手动启动还是随当前用户登录启动，WindowTabs 尚未运行时都会进入“等待 WindowTabs”，并持续低频检测，不会移除 Chrome 按钮。WindowTabs 就绪后自动进入“管理中”；管理期间 WindowTabs 退出时会先恢复按钮并等待其重启。只有用户主动选择“暂停管理”后才会保持暂停。移动便携目录后，需要从新位置手动运行一次以修复启动路径。
 
 ## 日志和崩溃恢复
 

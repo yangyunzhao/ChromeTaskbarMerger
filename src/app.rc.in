@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "杨云召\0"
             VALUE "FileDescription", "Chrome taskbar single-entry manager\0"
-            VALUE "FileVersion", "@PROJECT_VERSION@-rc2\0"
+            VALUE "FileVersion", "@PROJECT_VERSION@-rc3\0"
             VALUE "InternalName", "ChromeTaskbarMerger\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 杨云召\0"
             VALUE "OriginalFilename", "ChromeTaskbarMerger.exe\0"
             VALUE "ProductName", "ChromeTaskbarMerger\0"
-            VALUE "ProductVersion", "@PROJECT_VERSION@-rc2\0"
+            VALUE "ProductVersion", "@PROJECT_VERSION@-rc3\0"
         END
     END
     BLOCK "VarFileInfo"

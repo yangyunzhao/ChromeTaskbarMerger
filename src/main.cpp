@@ -143,6 +143,9 @@ int ListChromeWindows(ctm::Logger* const logger) {
         logger->Info(
             L"Configuration scan_interval_ms=" +
             std::to_wstring(result.config.scan_interval.count()) +
+            L"; windowtabs_check_interval_ms=" +
+            std::to_wstring(
+                result.config.windowtabs_check_interval.count()) +
             L"; start_with_windows=" +
             (result.config.start_with_windows ? L"true" : L"false") + L'.');
     }

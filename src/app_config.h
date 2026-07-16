@@ -8,11 +8,19 @@
 namespace ctm {
 
 inline constexpr std::chrono::milliseconds kDefaultScanInterval{2000};
+inline constexpr std::chrono::milliseconds kDefaultWindowTabsCheckInterval{
+    3000};
 inline constexpr std::chrono::milliseconds kMinimumScanInterval{500};
 inline constexpr std::chrono::milliseconds kMaximumScanInterval{60000};
+inline constexpr std::chrono::milliseconds kMinimumWindowTabsCheckInterval{
+    500};
+inline constexpr std::chrono::milliseconds kMaximumWindowTabsCheckInterval{
+    60000};
 
 struct AppConfig {
     std::chrono::milliseconds scan_interval = kDefaultScanInterval;
+    std::chrono::milliseconds windowtabs_check_interval =
+        kDefaultWindowTabsCheckInterval;
     bool start_with_windows = false;
 };
 
