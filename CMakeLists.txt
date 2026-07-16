@@ -89,8 +89,14 @@ add_library(
         src/taskbar_controller.h
         src/taskbar_experiment.cpp
         src/taskbar_experiment.h
+        src/tab_activation.cpp
+        src/tab_activation.h
+        src/tab_group_model.cpp
+        src/tab_group_model.h
         src/tray_app.cpp
         src/tray_app.h
+        src/window_identity.cpp
+        src/window_identity.h
         src/windowtabs_presence.cpp
         src/windowtabs_presence.h
 )

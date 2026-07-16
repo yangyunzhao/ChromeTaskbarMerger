@@ -180,17 +180,6 @@ LONG_PTR CalculateTaskbarHiddenExtendedStyle(
            static_cast<LONG_PTR>(WS_EX_TOOLWINDOW);
 }
 
-bool WindowIdentityValuesMatch(const WindowIdentity& expected,
-                               const DWORD process_id,
-                               const DWORD thread_id,
-                               const std::uint64_t process_creation_time,
-                               const std::wstring_view class_name) noexcept {
-    return expected.process_id == process_id &&
-           expected.thread_id == thread_id &&
-           expected.process_creation_time == process_creation_time &&
-           expected.class_name == class_name;
-}
-
 std::wstring_view TaskbarMethodText(const TaskbarMethod method) {
     switch (method) {
         case TaskbarMethod::TaskbarList:

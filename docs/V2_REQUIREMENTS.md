@@ -1,6 +1,6 @@
 # ChromeTaskbarMerger V2 需求与设计
 
-> 状态：`PLANNED / DEVELOPMENT NOT STARTED`
+> 状态：`PHASE 0 PASS / PHASE 1 NOT STARTED`
 >
 > 设计日期：2026-07-16。本文档基于已发布的 `1.0.0`，定义不依赖 WindowTabs
 > 的 V2。开始实现前还应遵守
@@ -318,7 +318,7 @@ V1 的 `windowtabs_check_interval_ms` 在 V2 中已过时：
 
 ### Phase 0：V1 基线保护与 V2 测试骨架
 
-状态：`PLANNED`
+状态：`PASS`
 
 目标：在不改变已发布用户行为的前提下建立 V2 模型、测试接缝和独立验收记录。
 
@@ -343,6 +343,12 @@ Codex 自动验收：
 
 通过标准：V1 行为和测试零回归，V2 核心模型可测试，独立测试记录建立。Phase 0
 不得以删除或禁用任务栏功能换取简化。
+
+实际结果（2026-07-16）：全新 x64 Debug/Release 均无警告构建，两个配置的 7/7 CTest、
+命令行、`1.0.0` 便携包和 V1 恢复基线均通过。新增纯模型覆盖成员同步、稳定顺序、关闭、
+重复 HWND、句柄身份变化、激活失败及完整可达性门禁；新增代码没有真实窗口或任务栏修改
+调用点。Phase 0 不需要人工验收。完整命令和证据见
+[V2 测试计划与实际结果](../tests/manual_test_plan_v2.md)。
 
 ### Phase 1：内部标签 + 任务栏单入口核心可行性硬门槛
 

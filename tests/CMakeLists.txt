@@ -99,3 +99,20 @@ add_test(
     NAME management_state
     COMMAND ChromeTaskbarMergerManagementStateTests
 )
+
+add_executable(
+    ChromeTaskbarMergerTabGroupModelTests
+    tab_group_model_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerTabGroupModelTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerTabGroupModelTests)
+
+add_test(
+    NAME v2_tab_group_model
+    COMMAND ChromeTaskbarMergerTabGroupModelTests
+)

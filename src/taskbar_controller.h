@@ -1,12 +1,12 @@
 #pragma once
 
 #include "chrome_window.h"
+#include "window_identity.h"
 
 #include <Windows.h>
 #include <ShObjIdl.h>
 #include <wrl/client.h>
 
-#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -15,14 +15,6 @@ namespace ctm {
 enum class TaskbarMethod {
     TaskbarList,
     WindowStyle,
-};
-
-struct WindowIdentity {
-    HWND hwnd = nullptr;
-    DWORD process_id = 0;
-    DWORD thread_id = 0;
-    std::uint64_t process_creation_time = 0;
-    std::wstring class_name;
 };
 
 struct TaskbarMutationState {
@@ -51,12 +43,6 @@ struct TaskbarOperationResult {
 
 [[nodiscard]] LONG_PTR CalculateTaskbarHiddenExtendedStyle(
     LONG_PTR original_extended_style) noexcept;
-[[nodiscard]] bool WindowIdentityValuesMatch(
-    const WindowIdentity& expected,
-    DWORD process_id,
-    DWORD thread_id,
-    std::uint64_t process_creation_time,
-    std::wstring_view class_name) noexcept;
 [[nodiscard]] std::wstring_view TaskbarMethodText(TaskbarMethod method);
 
 class ITaskbarMutationController {
