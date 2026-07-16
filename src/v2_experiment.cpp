@@ -41,6 +41,47 @@ constexpr std::chrono::milliseconds kV2EventDebounce{100};
 constexpr std::chrono::milliseconds kV2MaximumEventDelay{500};
 constexpr std::chrono::milliseconds kV2FallbackScan{2000};
 constexpr std::chrono::milliseconds kV2TransientWindowRetry{250};
+constexpr std::chrono::milliseconds kV2GeometryDebounce{16};
+constexpr std::chrono::milliseconds kV2GeometryMaximumDelay{32};
+
+enum class GroupViewState {
+    Normal,
+    Minimized,
+    Maximized,
+    Fullscreen,
+};
+
+struct MonitorGeometry {
+    bool succeeded = false;
+    RECT monitor_bounds{};
+    RECT work_area{};
+};
+
+[[nodiscard]] MonitorGeometry QueryMonitorGeometry(const HWND hwnd) noexcept {
+    MonitorGeometry result;
+    const HMONITOR monitor =
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (monitor == nullptr) {
+        return result;
+    }
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, &info) == FALSE) {
+        return result;
+    }
+    result.succeeded = true;
+    result.monitor_bounds = info.rcMonitor;
+    result.work_area = info.rcWork;
+    return result;
+}
+
+[[nodiscard]] int TabStripHeightForWindow(const HWND hwnd) noexcept {
+    UINT dpi = GetDpiForWindow(hwnd);
+    if (dpi == 0) {
+        dpi = USER_DEFAULT_SCREEN_DPI;
+    }
+    return ScalePixelsForDpi(kV2TabStripHeight, dpi);
+}
 
 class ConsoleControlGuard final {
 public:
@@ -347,7 +388,7 @@ void PrintCommands(Logger* const logger,
                    const bool recovery_required) {
     std::wostringstream output;
     output
-        << L"\nPhase 2 commands (single key; Enter is not required):\n"
+        << L"\nPhase 3 commands (single key; Enter is not required):\n"
         << L"  p  Restore taskbar and original window layout, then pause\n"
         << L"  r  Retry an incomplete restoration\n"
         << L"  q  Restore safely and exit\n"
@@ -379,7 +420,10 @@ public:
           lifecycle_schedule_(
               kV2EventDebounce,
               kV2MaximumEventDelay,
-              kV2FallbackScan) {}
+              kV2FallbackScan),
+          geometry_schedule_(
+              kV2GeometryDebounce,
+              kV2GeometryMaximumDelay) {}
 
     ~V2ExperimentSession() override {
         win_event_monitor_.Stop();
@@ -491,7 +535,7 @@ public:
             return false;
         }
         geometry_ = CalculateWindowGroupGeometry(
-            anchor, kV2TabStripHeight);
+            anchor, TabStripHeightForWindow(active_identity_.hwnd));
         if (!geometry_.valid) {
             WriteLine(
                 logger_,
@@ -606,10 +650,15 @@ public:
         PrintCommands(logger_, false, false);
         while (!quit_requested_) {
             const auto before_wait = LifecycleSyncSchedule::Clock::now();
-            const auto scheduled_delay = managing_
-                                             ? lifecycle_schedule_.DelayUntilDue(
-                                                   before_wait)
-                                             : std::chrono::milliseconds(2000);
+            auto scheduled_delay = managing_
+                                       ? lifecycle_schedule_.DelayUntilDue(
+                                             before_wait)
+                                       : std::chrono::milliseconds(2000);
+            if (managing_ && geometry_schedule_.pending()) {
+                scheduled_delay = std::min(
+                    scheduled_delay,
+                    geometry_schedule_.DelayUntilDue(before_wait));
+            }
             const DWORD wait_timeout = static_cast<DWORD>(std::clamp<
                 long long>(scheduled_delay.count(), 0, 2000));
             const DWORD wait = MsgWaitForMultipleObjectsEx(
@@ -620,14 +669,14 @@ public:
                 MWMO_INPUTAVAILABLE);
             if (wait == WAIT_FAILED) {
                 fatal_error_ =
-                    L"The Phase 2 message wait failed with Win32 error " +
+                    L"The Phase 3 message wait failed with Win32 error " +
                     std::to_wstring(GetLastError()) + L'.';
             } else if (wait == WAIT_OBJECT_0) {
                 const ConsoleReadResult input =
                     ReadConsoleCommands(console_input);
                 if (!input.succeeded) {
                     fatal_error_ =
-                        L"Reading Phase 2 console input failed with Win32 error " +
+                        L"Reading Phase 3 console input failed with Win32 error " +
                         std::to_wstring(input.error_code) + L'.';
                 } else {
                     for (const wchar_t command : input.commands) {
@@ -643,7 +692,7 @@ public:
                        FALSE) {
                     if (message.message == WM_QUIT) {
                         fatal_error_ =
-                            L"The Phase 2 UI message loop received WM_QUIT.";
+                            L"The Phase 3 UI message loop received WM_QUIT.";
                         break;
                     }
                     if (message.hwnd == nullptr &&
@@ -651,6 +700,18 @@ public:
                         const ChromeWindowEvent event =
                             ChromeWinEventMonitor::DecodeMessage(
                                 message.wParam, message.lParam);
+                        if (RegistryContainsHandle(event.hwnd) &&
+                            (event.kind ==
+                                 ChromeWindowEventKind::LocationChanged ||
+                             event.kind ==
+                                 ChromeWindowEventKind::MinimizeStarted ||
+                             event.kind ==
+                                 ChromeWindowEventKind::MinimizeEnded)) {
+                            geometry_schedule_.RecordEvent(
+                                event,
+                                GeometrySyncSchedule::Clock::now());
+                            continue;
+                        }
                         if (ShouldRecordLifecycleEvent(event)) {
                             lifecycle_schedule_.RecordEvent(
                                 event,
@@ -670,6 +731,13 @@ public:
                 if (reason != LifecycleSyncReason::None &&
                     SynchronizeLifecycle(reason)) {
                     lifecycle_schedule_.MarkSynchronized(now);
+                }
+            }
+            if (fatal_error_.empty() && managing_) {
+                const auto now = GeometrySyncSchedule::Clock::now();
+                if (geometry_schedule_.IsDue(now) &&
+                    SynchronizeGroupGeometry()) {
+                    geometry_schedule_.MarkSynchronized();
                 }
             }
             if (!fatal_error_.empty()) {
@@ -738,6 +806,274 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<WindowIdentity> FindRegistryIdentity(
+        const HWND hwnd) const {
+        const auto match = std::find_if(
+            registry_.windows().begin(),
+            registry_.windows().end(),
+            [hwnd](const ChromeWindowSnapshot& snapshot) {
+                return snapshot.hwnd == hwnd;
+            });
+        if (match == registry_.windows().end()) {
+            return std::nullopt;
+        }
+        return MakeIdentity(*match);
+    }
+
+    [[nodiscard]] std::optional<WindowIdentity> GeometryDriver() const {
+        for (const HWND hint : {
+                 geometry_schedule_.minimize_ended_hint(),
+                 geometry_schedule_.minimize_started_hint(),
+                 geometry_schedule_.location_hint(),
+                 GetForegroundWindow(),
+                 active_identity_.hwnd}) {
+            if (const auto identity = FindRegistryIdentity(hint);
+                identity.has_value()) {
+                return identity;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void ApplyShowCommandToGroup(const int show_command) const noexcept {
+        for (const ChromeWindowSnapshot& snapshot : registry_.windows()) {
+            static_cast<void>(
+                ShowWindowAsync(snapshot.hwnd, show_command));
+        }
+    }
+
+    [[nodiscard]] bool SetTabStripVisibility(const bool visible) {
+        DWORD error = ERROR_SUCCESS;
+        if (!tab_strip_.SetVisible(visible, &error)) {
+            fatal_error_ =
+                L"Changing the Phase 3 tab-strip visibility failed with Win32 error " +
+                std::to_wstring(error) + L'.';
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool ApplyGroupGeometry(
+        const WindowGroupGeometry& geometry,
+        const WindowIdentity& active_identity,
+        const std::wstring_view reason,
+        const bool require_native_normal = false) {
+        if (!geometry.valid) {
+            fatal_error_ = L"Phase 3 calculated an invalid group geometry.";
+            return false;
+        }
+        const WindowCoordinationResult arranged = require_native_normal
+            ? placement_controller_.ArrangeAsNormal(geometry, active_identity)
+            : placement_controller_.Arrange(geometry, active_identity);
+        if (!arranged.succeeded) {
+            fatal_error_ =
+                L"Phase 3 group arrangement failed: " + arranged.message;
+            return false;
+        }
+        DWORD bounds_error = ERROR_SUCCESS;
+        if (!tab_strip_.SetBounds(
+                geometry.tab_strip_bounds, &bounds_error)) {
+            fatal_error_ =
+                L"Moving the Phase 3 tab strip failed with Win32 error " +
+                std::to_wstring(bounds_error) + L'.';
+            return false;
+        }
+        if (model_.CanActivate(active_identity)) {
+            static_cast<void>(model_.SetActive(active_identity));
+            if (!UpdateActiveVisual(active_identity)) {
+                fatal_error_ =
+                    L"The Phase 3 tab strip could not follow the geometry driver.";
+                return false;
+            }
+        }
+        geometry_ = geometry;
+        WriteLine(
+            logger_,
+            L"GROUP_GEOMETRY reason=" + std::wstring(reason) +
+                L" left=" + std::to_wstring(geometry.group_bounds.left) +
+                L" top=" + std::to_wstring(geometry.group_bounds.top) +
+                L" right=" + std::to_wstring(geometry.group_bounds.right) +
+                L" bottom=" +
+                std::to_wstring(geometry.group_bounds.bottom));
+        return true;
+    }
+
+    [[nodiscard]] bool SynchronizeGroupGeometry() {
+        const std::optional<WindowIdentity> driver = GeometryDriver();
+        if (!driver.has_value() || registry_.windows().empty()) {
+            return true;
+        }
+        const WindowIdentityQueryResult current =
+            QueryWindowIdentity(driver->hwnd);
+        if (!current.succeeded ||
+            !WindowIdentitiesMatch(*driver, current.identity)) {
+            lifecycle_schedule_.RecordEvent(
+                {.kind = ChromeWindowEventKind::Destroyed,
+                 .hwnd = driver->hwnd},
+                LifecycleSyncSchedule::Clock::now());
+            return true;
+        }
+
+        RECT driver_bounds{};
+        if (GetWindowRect(driver->hwnd, &driver_bounds) == FALSE) {
+            fatal_error_ =
+                L"Reading the Phase 3 geometry driver failed with Win32 error " +
+                std::to_wstring(GetLastError()) + L'.';
+            return false;
+        }
+        const MonitorGeometry monitor =
+            QueryMonitorGeometry(driver->hwnd);
+        if (!monitor.succeeded) {
+            fatal_error_ = L"Reading the Phase 3 monitor geometry failed.";
+            return false;
+        }
+
+        const bool minimize_started =
+            geometry_schedule_.minimize_started_hint() != nullptr;
+        const bool minimize_ended =
+            geometry_schedule_.minimize_ended_hint() != nullptr;
+        if (view_state_ != GroupViewState::Minimized &&
+            (minimize_started || IsIconic(driver->hwnd) != FALSE)) {
+            state_before_minimize_ = view_state_;
+            geometry_before_minimize_ = geometry_;
+            ApplyShowCommandToGroup(SW_MINIMIZE);
+            if (!SetTabStripVisibility(false)) {
+                return false;
+            }
+            view_state_ = GroupViewState::Minimized;
+            WriteLine(logger_, L"GROUP_STATE MINIMIZED");
+            return true;
+        }
+        if (view_state_ == GroupViewState::Minimized) {
+            if (!minimize_ended || IsIconic(driver->hwnd) != FALSE) {
+                return true;
+            }
+            view_state_ = state_before_minimize_;
+            const bool restore_maximized =
+                view_state_ == GroupViewState::Maximized;
+            const WindowGroupGeometry restored_geometry =
+                restore_maximized
+                    ? CalculateWindowGroupGeometry(
+                          monitor.work_area,
+                          TabStripHeightForWindow(driver->hwnd))
+                    : geometry_before_minimize_;
+            if (!ApplyGroupGeometry(
+                    restored_geometry,
+                    *driver,
+                    restore_maximized ? L"restore-maximized"
+                                      : L"restore-normal",
+                    true) ||
+                !SetTabStripVisibility(true)) {
+                return false;
+            }
+            WriteLine(
+                logger_,
+                restore_maximized ? L"GROUP_STATE MAXIMIZED"
+                                  : L"GROUP_STATE NORMAL");
+            return true;
+        }
+
+        const bool fullscreen = IsFullscreenRectangle(
+            driver_bounds, monitor.monitor_bounds, 2);
+        if (fullscreen) {
+            if (view_state_ != GroupViewState::Fullscreen) {
+                state_before_fullscreen_ = view_state_;
+                geometry_before_fullscreen_ = geometry_;
+                view_state_ = GroupViewState::Fullscreen;
+                if (!SetTabStripVisibility(false)) {
+                    return false;
+                }
+                WriteLine(logger_, L"GROUP_STATE FULLSCREEN");
+            }
+            return true;
+        }
+        if (view_state_ == GroupViewState::Fullscreen) {
+            view_state_ = state_before_fullscreen_;
+            if (view_state_ == GroupViewState::Maximized ||
+                IsZoomed(driver->hwnd) != FALSE) {
+                view_state_ = GroupViewState::Maximized;
+                if (!ApplyGroupGeometry(
+                        CalculateWindowGroupGeometry(
+                            monitor.work_area,
+                            TabStripHeightForWindow(driver->hwnd)),
+                        *driver,
+                        L"fullscreen-exit-maximized",
+                        true) ||
+                    !SetTabStripVisibility(true)) {
+                    return false;
+                }
+                WriteLine(logger_, L"GROUP_STATE MAXIMIZED");
+                return true;
+            }
+            view_state_ = GroupViewState::Normal;
+            if (!ApplyGroupGeometry(
+                    geometry_before_fullscreen_,
+                    *driver,
+                    L"fullscreen-exit-normal",
+                    true) ||
+                !SetTabStripVisibility(true)) {
+                return false;
+            }
+            WriteLine(logger_, L"GROUP_STATE NORMAL");
+            return true;
+        }
+
+        if (IsZoomed(driver->hwnd) != FALSE) {
+            if (view_state_ == GroupViewState::Maximized) {
+                view_state_ = GroupViewState::Normal;
+                if (!ApplyGroupGeometry(
+                        geometry_before_maximize_,
+                        *driver,
+                        L"managed-maximize-restore",
+                        true) ||
+                    !SetTabStripVisibility(true)) {
+                    return false;
+                }
+                WriteLine(logger_, L"GROUP_STATE NORMAL");
+                return true;
+            }
+            geometry_before_maximize_ = geometry_;
+            view_state_ = GroupViewState::Maximized;
+            if (!ApplyGroupGeometry(
+                    CalculateWindowGroupGeometry(
+                        monitor.work_area,
+                        TabStripHeightForWindow(driver->hwnd)),
+                    *driver,
+                    L"managed-maximize",
+                    true) ||
+                !SetTabStripVisibility(true)) {
+                return false;
+            }
+            WriteLine(logger_, L"GROUP_STATE MAXIMIZED");
+            return true;
+        }
+        if (view_state_ == GroupViewState::Maximized) {
+            if (RectanglesEqual(driver_bounds, geometry_.content_bounds)) {
+                return true;
+            }
+            // A title-bar drag from the managed-maximized rectangle behaves
+            // like native drag-to-restore and continues through normal
+            // move/resize synchronization below.
+            view_state_ = GroupViewState::Normal;
+            WriteLine(logger_, L"GROUP_STATE NORMAL reason=title-drag");
+        }
+
+        const WindowGroupGeometry moved =
+            CalculateWindowGroupGeometryFromContentBounds(
+                driver_bounds,
+                monitor.work_area,
+                TabStripHeightForWindow(driver->hwnd));
+        if (!moved.valid) {
+            fatal_error_ =
+                L"The moved Chrome rectangle cannot form a safe Phase 3 group.";
+            return false;
+        }
+        if (RectanglesEqual(moved.group_bounds, geometry_.group_bounds)) {
+            return true;
+        }
+        return ApplyGroupGeometry(moved, *driver, L"move-or-resize");
+    }
+
     [[nodiscard]] bool UpdateActiveVisual(
         const WindowIdentity& identity) {
         DWORD owner_error = ERROR_SUCCESS;
@@ -819,6 +1155,7 @@ private:
             case ChromeWindowEventKind::Hidden:
             case ChromeWindowEventKind::MinimizeStarted:
             case ChromeWindowEventKind::MinimizeEnded:
+            case ChromeWindowEventKind::LocationChanged:
                 return false;
         }
         return false;
@@ -828,8 +1165,8 @@ private:
         const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
         if (!windowtabs.query_succeeded || windowtabs.running) {
             fatal_error_ = windowtabs.running
-                               ? L"WindowTabs started during the isolated experiment; Phase 2 must roll back."
-                               : L"WindowTabs presence could no longer be checked; Phase 2 must roll back.";
+                               ? L"WindowTabs started during the isolated experiment; Phase 3 must roll back."
+                               : L"WindowTabs presence could no longer be checked; Phase 3 must roll back.";
             return false;
         }
         return true;
@@ -928,7 +1265,8 @@ private:
             return false;
         }
         geometry_ =
-            CalculateWindowGroupGeometry(anchor, kV2TabStripHeight);
+            CalculateWindowGroupGeometry(
+                anchor, TabStripHeightForWindow(active_identity.hwnd));
         if (!geometry_.valid) {
             fatal_error_ =
                 L"The current Chrome rectangle is too small for the V2 tab strip.";
@@ -945,12 +1283,12 @@ private:
 
         ManageableScan scan = ScanManageableChromeWindows(logger_);
         if (!scan.succeeded) {
-            fatal_error_ = L"The Phase 2 fallback Chrome scan failed.";
+            fatal_error_ = L"The Phase 3 fallback Chrome scan failed.";
             return false;
         }
         if (scan.windows.size() > 5) {
             fatal_error_ =
-                L"Phase 2 supports at most 5 manageable Chrome windows; the new window remains visible on the taskbar.";
+                L"Phase 3 supports at most 5 manageable Chrome windows; the new window remains visible on the taskbar.";
             return false;
         }
 
@@ -1197,7 +1535,7 @@ private:
     void HandleCommand(const wchar_t command) {
         WriteLine(
             logger_,
-            L"phase2> " + std::wstring(1, command));
+            L"phase3> " + std::wstring(1, command));
         if (command == L'h' || command == L'?') {
             PrintCommands(logger_, paused_, recovery_required_);
             return;
@@ -1326,7 +1664,7 @@ private:
         } catch (...) {
             if (logger_ != nullptr) {
                 logger_->Error(
-                    L"The Phase 2 emergency cleanup raised an unexpected exception.");
+                    L"The Phase 3 emergency cleanup raised an unexpected exception.");
             }
         }
     }
@@ -1344,11 +1682,18 @@ private:
     TabActivationCoordinator activation_;
     ChromeWindowRegistry registry_;
     LifecycleSyncSchedule lifecycle_schedule_;
+    GeometrySyncSchedule geometry_schedule_;
     ChromeWinEventMonitor win_event_monitor_;
     WindowGroupPlacementController placement_controller_;
     TabStripWindow tab_strip_;
     WindowGroupGeometry geometry_;
+    WindowGroupGeometry geometry_before_minimize_;
+    WindowGroupGeometry geometry_before_maximize_;
+    WindowGroupGeometry geometry_before_fullscreen_;
     WindowIdentity active_identity_;
+    GroupViewState view_state_ = GroupViewState::Normal;
+    GroupViewState state_before_minimize_ = GroupViewState::Normal;
+    GroupViewState state_before_fullscreen_ = GroupViewState::Normal;
     bool managing_ = false;
     bool paused_ = false;
     bool recovery_required_ = false;
@@ -1366,9 +1711,9 @@ private:
     const std::filesystem::path& recovery_journal_path) {
     std::wostringstream introduction;
     introduction
-        << L"=== ChromeTaskbarMerger V2 Phase 2 isolated experiment ===\n"
+        << L"=== ChromeTaskbarMerger V2 Phase 3 isolated experiment ===\n"
         << L"This is not the default V1 tray behavior. It creates a minimal native tab strip,\n"
-        << L"tracks the lifecycle of 1-5 normal Chrome windows, and keeps one taskbar entry.\n"
+        << L"tracks 1-5 Chrome windows, synchronizes group geometry and display state, and keeps one taskbar entry.\n"
         << L"It never uses SetParent and does not modify Chrome data.";
     if (logger != nullptr && !logger->log_path().empty()) {
         introduction << L"\nLog file: " << logger->log_path().wstring();
@@ -1398,7 +1743,7 @@ private:
     if (scan.windows.empty() || scan.windows.size() > 5) {
         WriteLine(
             logger,
-            L"Phase 2 initially requires 1-5 manageable Chrome windows; found " +
+            L"Phase 3 initially requires 1-5 manageable Chrome windows; found " +
                 std::to_wstring(scan.windows.size()) + L'.',
             true);
         return 4;
@@ -1481,13 +1826,13 @@ private:
     if (!session.Prepare()) {
         WriteLine(
             logger,
-            L"Phase 2 preparation failed; scope-exit restoration was attempted.",
+            L"Phase 3 preparation failed; scope-exit restoration was attempted.",
             true);
         return 5;
     }
     WriteLine(
         logger,
-        L"Phase 2 is managing: lifecycle events, fallback scans, native tabs, and the taskbar transaction are active.");
+        L"Phase 3 is managing: lifecycle events, interactive group geometry, display-state synchronization, native tabs, and the taskbar transaction are active.");
     return session.Run(input_guard.input());
 }
 
@@ -1502,21 +1847,21 @@ int RunV2Experiment(
     } catch (const std::exception& exception) {
         if (logger != nullptr) {
             logger->Error(
-                std::string("Unhandled V2 Phase 2 exception: ") +
+                std::string("Unhandled V2 Phase 3 exception: ") +
                 exception.what());
         }
         WriteLine(
             logger,
-            L"The V2 Phase 2 experiment stopped after an exception; emergency restoration was attempted.",
+            L"The V2 Phase 3 experiment stopped after an exception; emergency restoration was attempted.",
             true);
         return 6;
     } catch (...) {
         if (logger != nullptr) {
-            logger->Error(L"Unhandled unknown V2 Phase 2 exception.");
+            logger->Error(L"Unhandled unknown V2 Phase 3 exception.");
         }
         WriteLine(
             logger,
-            L"The V2 Phase 2 experiment stopped after an unknown exception; emergency restoration was attempted.",
+            L"The V2 Phase 3 experiment stopped after an unknown exception; emergency restoration was attempted.",
             true);
         return 6;
     }

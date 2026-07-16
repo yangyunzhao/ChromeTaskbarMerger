@@ -184,3 +184,25 @@ add_test(
     NAME v2_lifecycle_sync
     COMMAND ChromeTaskbarMergerLifecycleSyncTests
 )
+
+add_executable(
+    ChromeTaskbarMergerManifestTests
+    manifest_tests.cpp
+)
+
+target_compile_definitions(
+    ChromeTaskbarMergerManifestTests
+    PRIVATE
+        UNICODE
+        _UNICODE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+)
+ctm_enable_warnings(ChromeTaskbarMergerManifestTests)
+
+add_test(
+    NAME v2_phase3_manifest
+    COMMAND
+        ChromeTaskbarMergerManifestTests
+        $<TARGET_FILE:ChromeTaskbarMerger>
+)

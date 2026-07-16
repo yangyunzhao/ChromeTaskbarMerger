@@ -100,6 +100,11 @@ bool TabStripWindow::Create(
         AssignError(error_code, creation_error);
         return false;
     }
+    dpi_ = GetDpiForWindow(hwnd_);
+    if (dpi_ == 0) {
+        dpi_ = USER_DEFAULT_SCREEN_DPI;
+    }
+    UpdateDpiResources();
 
     DWORD item_error = ERROR_SUCCESS;
     if (!SetItems(items, active_identity, &item_error)) {
@@ -196,7 +201,7 @@ bool TabStripWindow::SetOwner(const HWND owner,
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW) ==
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) ==
         FALSE) {
         AssignError(error_code, GetLastError());
         return false;
@@ -219,8 +224,23 @@ bool TabStripWindow::SetBounds(const RECT& bounds,
             bounds.top,
             RectangleWidth(bounds),
             RectangleHeight(bounds),
-            SWP_NOACTIVATE | SWP_SHOWWINDOW) == FALSE) {
+            SWP_NOACTIVATE) == FALSE) {
         AssignError(error_code, GetLastError());
+        return false;
+    }
+    AssignError(error_code, ERROR_SUCCESS);
+    return true;
+}
+
+bool TabStripWindow::SetVisible(const bool visible,
+                                DWORD* const error_code) noexcept {
+    if (hwnd_ == nullptr || IsWindow(hwnd_) == FALSE) {
+        AssignError(error_code, ERROR_INVALID_WINDOW_HANDLE);
+        return false;
+    }
+    ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+    if ((IsWindowVisible(hwnd_) != FALSE) != visible) {
+        AssignError(error_code, ERROR_INVALID_STATE);
         return false;
     }
     AssignError(error_code, ERROR_SUCCESS);
@@ -237,6 +257,11 @@ void TabStripWindow::Destroy() noexcept {
     items_.clear();
     active_identity_ = {};
     layout_ = {};
+    dpi_ = USER_DEFAULT_SCREEN_DPI;
+    if (font_ != nullptr) {
+        DeleteObject(font_);
+        font_ = nullptr;
+    }
 }
 
 bool TabStripWindow::IsHealthy() const noexcept {
@@ -284,6 +309,12 @@ LRESULT TabStripWindow::HandleMessage(const UINT message,
         case WM_SIZE:
             RecalculateLayout();
             return 0;
+        case WM_DPICHANGED:
+            dpi_ = LOWORD(wparam);
+            UpdateDpiResources();
+            RecalculateLayout();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
         case WM_PAINT:
             Paint();
             return 0;
@@ -324,7 +355,24 @@ void TabStripWindow::RecalculateLayout() noexcept {
     layout_ = CalculateTabStripLayout(
         {.cx = client.right - client.left,
          .cy = client.bottom - client.top},
-        items_.size());
+        items_.size(), dpi_);
+}
+
+void TabStripWindow::UpdateDpiResources() noexcept {
+    if (font_ != nullptr) {
+        DeleteObject(font_);
+        font_ = nullptr;
+    }
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS,
+            sizeof(metrics),
+            &metrics,
+            0,
+            dpi_) != FALSE) {
+        font_ = CreateFontIndirectW(&metrics.lfMessageFont);
+    }
 }
 
 void TabStripWindow::Paint() noexcept {
@@ -343,7 +391,10 @@ void TabStripWindow::Paint() noexcept {
     }
     SetBkMode(device, TRANSPARENT);
     const HGDIOBJ previous_font =
-        SelectObject(device, GetStockObject(DEFAULT_GUI_FONT));
+        SelectObject(
+            device,
+            font_ != nullptr ? static_cast<HGDIOBJ>(font_)
+                             : GetStockObject(DEFAULT_GUI_FONT));
 
     for (std::size_t index = 0;
          index < items_.size() && index < layout_.items.size();
@@ -359,11 +410,20 @@ void TabStripWindow::Paint() noexcept {
         }
 
         RECT text_bounds = layout_item.bounds;
-        text_bounds.left += 9;
+        text_bounds.left += MulDiv(
+            9, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI);
         text_bounds.right = layout_item.close_bounds.right >
                                     layout_item.close_bounds.left
-                                ? layout_item.close_bounds.left - 4
-                                : text_bounds.right - 8;
+                                ? layout_item.close_bounds.left -
+                                      MulDiv(
+                                          4,
+                                          static_cast<int>(dpi_),
+                                          USER_DEFAULT_SCREEN_DPI)
+                                : text_bounds.right -
+                                      MulDiv(
+                                          8,
+                                          static_cast<int>(dpi_),
+                                          USER_DEFAULT_SCREEN_DPI);
         SetTextColor(device, RGB(245, 247, 250));
         const std::wstring& title = items_[index].title;
         DrawTextW(

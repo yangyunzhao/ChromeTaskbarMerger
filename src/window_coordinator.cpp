@@ -3,6 +3,7 @@
 #include "window_identity_query.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iterator>
 
 namespace ctm {
@@ -57,6 +58,29 @@ namespace {
     return rectangle.bottom - rectangle.top;
 }
 
+[[nodiscard]] RECT ConstrainToBounds(
+    const RECT& rectangle,
+    const RECT& bounds) noexcept {
+    const int bounds_width = RectangleWidth(bounds);
+    const int bounds_height = RectangleHeight(bounds);
+    const int width = std::min(RectangleWidth(rectangle), bounds_width);
+    const int height = std::min(RectangleHeight(rectangle), bounds_height);
+    const int minimum_left = static_cast<int>(bounds.left);
+    const int minimum_top = static_cast<int>(bounds.top);
+    const int maximum_left = static_cast<int>(bounds.right) - width;
+    const int maximum_top = static_cast<int>(bounds.bottom) - height;
+    const int left = std::clamp(
+        static_cast<int>(rectangle.left), minimum_left, maximum_left);
+    const int top = std::clamp(
+        static_cast<int>(rectangle.top), minimum_top, maximum_top);
+    return {
+        .left = left,
+        .top = top,
+        .right = left + width,
+        .bottom = top + height,
+    };
+}
+
 }  // namespace
 
 WindowGroupGeometry CalculateWindowGroupGeometry(
@@ -75,6 +99,57 @@ WindowGroupGeometry CalculateWindowGroupGeometry(
     geometry.content_bounds.top = geometry.tab_strip_bounds.bottom;
     geometry.valid = true;
     return geometry;
+}
+
+WindowGroupGeometry CalculateWindowGroupGeometryFromContentBounds(
+    const RECT& content_bounds,
+    const RECT& work_area,
+    const int tab_strip_height) noexcept {
+    if (RectangleWidth(content_bounds) < 240 ||
+        RectangleHeight(content_bounds) < 160 ||
+        RectangleWidth(work_area) < 240 ||
+        RectangleHeight(work_area) < tab_strip_height + 160 ||
+        tab_strip_height <= 0) {
+        return {};
+    }
+    const RECT desired_group = {
+        .left = content_bounds.left,
+        .top = content_bounds.top - tab_strip_height,
+        .right = content_bounds.right,
+        .bottom = content_bounds.bottom,
+    };
+    return CalculateWindowGroupGeometry(
+        ConstrainToBounds(desired_group, work_area), tab_strip_height);
+}
+
+int ScalePixelsForDpi(const int pixels, const UINT dpi) noexcept {
+    if (pixels <= 0 || dpi == 0) {
+        return 0;
+    }
+    return MulDiv(pixels, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+}
+
+bool RectanglesEqual(const RECT& left, const RECT& right) noexcept {
+    return left.left == right.left && left.top == right.top &&
+           left.right == right.right && left.bottom == right.bottom;
+}
+
+bool RectangleFitsWithin(const RECT& rectangle,
+                         const RECT& bounds) noexcept {
+    return RectangleWidth(rectangle) > 0 && RectangleHeight(rectangle) > 0 &&
+           rectangle.left >= bounds.left && rectangle.top >= bounds.top &&
+           rectangle.right <= bounds.right &&
+           rectangle.bottom <= bounds.bottom;
+}
+
+bool IsFullscreenRectangle(const RECT& rectangle,
+                           const RECT& monitor_bounds,
+                           const int tolerance) noexcept {
+    const int safe_tolerance = std::max(tolerance, 0);
+    return std::abs(rectangle.left - monitor_bounds.left) <= safe_tolerance &&
+           std::abs(rectangle.top - monitor_bounds.top) <= safe_tolerance &&
+           std::abs(rectangle.right - monitor_bounds.right) <= safe_tolerance &&
+           std::abs(rectangle.bottom - monitor_bounds.bottom) <= safe_tolerance;
 }
 
 WindowActivationResult Win32WindowActivationGateway::Verify(
@@ -321,6 +396,8 @@ WindowCoordinationResult WindowGroupPlacementController::Arrange(
 
     const int width = RectangleWidth(geometry.content_bounds);
     const int height = RectangleHeight(geometry.content_bounds);
+    std::vector<PlacementRecord*> participants;
+    participants.reserve(records_.size());
     for (PlacementRecord& record : records_) {
         if (!record.participating || record.invalidated) {
             continue;
@@ -333,60 +410,123 @@ WindowCoordinationResult WindowGroupPlacementController::Arrange(
             result.message = validation.message;
             return result;
         }
-        if (SetWindowPos(
-                record.identity.hwnd,
-                nullptr,
-                geometry.content_bounds.left,
-                geometry.content_bounds.top,
-                width,
-                height,
-                SWP_NOZORDER | SWP_NOACTIVATE) == FALSE) {
-            result.win32_error = GetLastError();
-            result.message = L"Applying the shared group rectangle failed.";
-            return result;
-        }
-        record.position_modified = true;
+        participants.push_back(&record);
     }
 
-    for (const PlacementRecord& record : records_) {
-        if (!record.participating || record.invalidated) {
-            continue;
-        }
-        if (WindowIdentitiesMatch(record.identity, active_identity)) {
-            continue;
-        }
-        if (SetWindowPos(
-                record.identity.hwnd,
-                active_identity.hwnd,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) == FALSE) {
-            result.identity = record.identity;
+    HDWP deferred = BeginDeferWindowPos(
+        static_cast<int>(participants.size()));
+    if (deferred == nullptr) {
+        result.win32_error = GetLastError();
+        result.message = L"Starting the atomic group arrangement failed.";
+        return result;
+    }
+    for (PlacementRecord* const record : participants) {
+        result.identity = record->identity;
+        const bool is_active = WindowIdentitiesMatch(
+            record->identity, active_identity);
+        deferred = DeferWindowPos(
+            deferred,
+            record->identity.hwnd,
+            is_active ? HWND_TOP : active_identity.hwnd,
+            geometry.content_bounds.left,
+            geometry.content_bounds.top,
+            width,
+            height,
+            SWP_NOACTIVATE);
+        if (deferred == nullptr) {
             result.win32_error = GetLastError();
-            result.message = L"Applying the group Z-order failed.";
+            result.message =
+                L"Queuing the atomic group rectangle and Z-order failed.";
             return result;
         }
     }
-    if (SetWindowPos(
-            active_identity.hwnd,
-            HWND_TOP,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) == FALSE) {
-        result.identity = active_identity;
+    if (EndDeferWindowPos(deferred) == FALSE) {
         result.win32_error = GetLastError();
-        result.message = L"Raising the initial active window failed.";
+        result.message = L"Committing the atomic group arrangement failed.";
         return result;
+    }
+    for (PlacementRecord* const record : participants) {
+        record->position_modified = true;
     }
 
     result.succeeded = true;
     result.identity = {};
     result.message = L"The windows now share one group rectangle.";
     return result;
+}
+
+WindowCoordinationResult WindowGroupPlacementController::ArrangeAsNormal(
+    const WindowGroupGeometry& geometry,
+    const WindowIdentity& active_identity) {
+    WindowCoordinationResult result;
+    if (!geometry.valid) {
+        result.win32_error = ERROR_INVALID_STATE;
+        result.message = L"The managed-normal group geometry is unavailable.";
+        return result;
+    }
+
+    std::vector<PlacementRecord*> participants;
+    participants.reserve(records_.size());
+    bool active_found = false;
+    for (PlacementRecord& record : records_) {
+        if (!record.participating || record.invalidated) {
+            continue;
+        }
+        result.identity = record.identity;
+        const WindowActivationResult validation =
+            IdentityFailure(record.identity, true);
+        if (!validation.succeeded) {
+            result.win32_error = validation.win32_error;
+            result.message = validation.message;
+            return result;
+        }
+        active_found = active_found || WindowIdentitiesMatch(
+            record.identity, active_identity);
+        participants.push_back(&record);
+    }
+    if (participants.empty() || !active_found) {
+        result.win32_error = ERROR_NOT_FOUND;
+        result.message =
+            L"The active window is not part of the managed-normal group.";
+        return result;
+    }
+
+    // The restore obligation must exist before the first native state change.
+    // This also makes a partial normalization safe for the session guard.
+    for (PlacementRecord* const record : participants) {
+        record->position_modified = true;
+    }
+    for (PlacementRecord* const record : participants) {
+        result.identity = record->identity;
+        WINDOWPLACEMENT current{};
+        current.length = sizeof(current);
+        if (GetWindowPlacement(record->identity.hwnd, &current) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message =
+                L"Reading native state before managed-normal arrangement failed.";
+            return result;
+        }
+        // Do not inherit asynchronous or restore-to-maximized placement
+        // flags from a minimized/maximized member. The normal-state check
+        // below must observe this transition before the atomic arrangement.
+        current.flags = 0;
+        current.showCmd = SW_SHOWNOACTIVATE;
+        if (SetWindowPlacement(record->identity.hwnd, &current) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message =
+                L"Restoring native state for managed-normal arrangement failed.";
+            return result;
+        }
+        if (IsIconic(record->identity.hwnd) != FALSE ||
+            IsZoomed(record->identity.hwnd) != FALSE) {
+            result.win32_error = ERROR_INVALID_STATE;
+            result.message =
+                L"The window did not enter native normal state for safe arrangement.";
+            return result;
+        }
+    }
+
+    return Arrange(geometry, active_identity);
 }
 
 WindowGroupRestoreReport WindowGroupPlacementController::RestoreAll() {

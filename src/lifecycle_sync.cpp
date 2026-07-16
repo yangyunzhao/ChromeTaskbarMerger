@@ -103,4 +103,63 @@ std::chrono::milliseconds LifecycleSyncSchedule::DelayUntilDue(
     return std::chrono::ceil<std::chrono::milliseconds>(due - now);
 }
 
+GeometrySyncSchedule::GeometrySyncSchedule(
+    const std::chrono::milliseconds debounce_interval,
+    const std::chrono::milliseconds maximum_event_delay) noexcept
+    : debounce_interval_(PositiveOrOne(debounce_interval)),
+      maximum_event_delay_(PositiveOrOne(maximum_event_delay)) {}
+
+void GeometrySyncSchedule::RecordEvent(
+    const ChromeWindowEvent& event,
+    const TimePoint now) noexcept {
+    if (event.hwnd == nullptr) {
+        return;
+    }
+    switch (event.kind) {
+        case ChromeWindowEventKind::LocationChanged:
+            location_hint_ = event.hwnd;
+            break;
+        case ChromeWindowEventKind::MinimizeStarted:
+            minimize_started_hint_ = event.hwnd;
+            break;
+        case ChromeWindowEventKind::MinimizeEnded:
+            minimize_ended_hint_ = event.hwnd;
+            break;
+        default:
+            return;
+    }
+    if (pending_event_count_ == 0) {
+        first_event_ = now;
+    }
+    last_event_ = now;
+    ++pending_event_count_;
+}
+
+void GeometrySyncSchedule::MarkSynchronized() noexcept {
+    pending_event_count_ = 0;
+    location_hint_ = nullptr;
+    minimize_started_hint_ = nullptr;
+    minimize_ended_hint_ = nullptr;
+}
+
+bool GeometrySyncSchedule::IsDue(const TimePoint now) const noexcept {
+    if (pending_event_count_ == 0) {
+        return false;
+    }
+    return now >= std::min(
+                      last_event_ + debounce_interval_,
+                      first_event_ + maximum_event_delay_);
+}
+
+std::chrono::milliseconds GeometrySyncSchedule::DelayUntilDue(
+    const TimePoint now) const noexcept {
+    if (pending_event_count_ == 0 || IsDue(now)) {
+        return std::chrono::milliseconds::zero();
+    }
+    const TimePoint due = std::min(
+        last_event_ + debounce_interval_,
+        first_event_ + maximum_event_delay_);
+    return std::chrono::ceil<std::chrono::milliseconds>(due - now);
+}
+
 }  // namespace ctm

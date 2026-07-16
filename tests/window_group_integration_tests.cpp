@@ -239,6 +239,59 @@ void TestGeometryPolicy() {
                 ctm::kV2TabStripHeight)
                 .valid,
            "unsafe tiny geometry should be rejected");
+
+    const RECT work_area = {
+        .left = -1920,
+        .top = 0,
+        .right = 0,
+        .bottom = 1040,
+    };
+    const ctm::WindowGroupGeometry moved =
+        ctm::CalculateWindowGroupGeometryFromContentBounds(
+            {.left = -1700, .top = 238, .right = -900, .bottom = 838},
+            work_area,
+            ctm::kV2TabStripHeight);
+    Expect(moved.valid &&
+               RectanglesEqual(
+                   moved.group_bounds,
+                   {.left = -1700,
+                    .top = 200,
+                    .right = -900,
+                    .bottom = 838}) &&
+               RectanglesEqual(
+                   moved.content_bounds,
+                   {.left = -1700,
+                    .top = 238,
+                    .right = -900,
+                    .bottom = 838}),
+           "a moved content rectangle should reconstruct its group on a negative-coordinate monitor");
+
+    const ctm::WindowGroupGeometry snapped =
+        ctm::CalculateWindowGroupGeometryFromContentBounds(
+            {.left = -1920, .top = 0, .right = -960, .bottom = 1040},
+            work_area,
+            ctm::kV2TabStripHeight);
+    Expect(snapped.valid &&
+               ctm::RectangleFitsWithin(snapped.group_bounds, work_area) &&
+               snapped.tab_strip_bounds.top == work_area.top &&
+               snapped.content_bounds.top ==
+                   work_area.top + ctm::kV2TabStripHeight,
+           "a snapped content rectangle should leave visible room for the external strip");
+
+    Expect(ctm::ScalePixelsForDpi(38, 96) == 38 &&
+               ctm::ScalePixelsForDpi(38, 120) == 48 &&
+               ctm::ScalePixelsForDpi(38, 144) == 57 &&
+               ctm::ScalePixelsForDpi(38, 192) == 76,
+           "tab-strip metrics should scale at 100, 125, 150, and 200 percent DPI");
+    Expect(ctm::IsFullscreenRectangle(
+               {.left = -1920, .top = 0, .right = 0, .bottom = 1080},
+               {.left = -1920, .top = 0, .right = 0, .bottom = 1080},
+               1) &&
+               !ctm::IsFullscreenRectangle(
+                   {.left = -1920, .top = 0, .right = 0, .bottom = 1040},
+                   {.left = -1920, .top = 0, .right = 0, .bottom = 1080},
+                   1),
+           "fullscreen detection should distinguish monitor bounds from its work area");
 }
 
 void TestSyntheticWindowGroupingSwitchAndRestore() {
@@ -405,6 +458,132 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
                    "the close hit region should report only its exact identity");
             Expect(IsWindow(identities[2].hwnd) != FALSE,
                    "the strip should delegate closing to its lifecycle event sink");
+        }
+
+        const RECT moved_content = {
+            .left = 260,
+            .top = 278,
+            .right = 860,
+            .bottom = 678,
+        };
+        Expect(SetWindowPos(
+                   identities[1].hwnd,
+                   nullptr,
+                   moved_content.left,
+                   moved_content.top,
+                   moved_content.right - moved_content.left,
+                   moved_content.bottom - moved_content.top,
+                   SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
+               "one synthetic member should accept an interactive move and resize");
+        const RECT work_area = {
+            .left = 0,
+            .top = 0,
+            .right = 1920,
+            .bottom = 1040,
+        };
+        const ctm::WindowGroupGeometry moved_geometry =
+            ctm::CalculateWindowGroupGeometryFromContentBounds(
+                moved_content, work_area, ctm::kV2TabStripHeight);
+        Expect(moved_geometry.valid &&
+                   placement.Arrange(moved_geometry, identities[1]).succeeded,
+               "the moved member should drive a new shared group rectangle");
+        DWORD bounds_error = ERROR_SUCCESS;
+        Expect(strip.SetBounds(
+                   moved_geometry.tab_strip_bounds, &bounds_error),
+               "the native strip should follow the moved group rectangle");
+        for (const ScopedTestWindow& window : windows) {
+            RECT current{};
+            GetWindowRect(window.hwnd(), &current);
+            Expect(RectanglesEqual(current, moved_geometry.content_bounds),
+                   "all group members should follow the moved and resized driver");
+        }
+        RECT strip_bounds{};
+        GetWindowRect(strip.hwnd(), &strip_bounds);
+        Expect(RectanglesEqual(
+                   strip_bounds, moved_geometry.tab_strip_bounds),
+               "the external tab strip should remain attached above the moved group");
+
+        for (const ctm::WindowIdentity& identity : identities) {
+            ShowWindow(identity.hwnd, SW_MINIMIZE);
+        }
+        Expect(IsIconic(identities[0].hwnd) != FALSE &&
+                   IsIconic(identities[1].hwnd) != FALSE &&
+                   IsIconic(identities[2].hwnd) != FALSE,
+               "a group minimize transaction should minimize every member");
+        DWORD visibility_error = ERROR_SUCCESS;
+        Expect(strip.SetVisible(false, &visibility_error) &&
+                   IsWindowVisible(strip.hwnd()) == FALSE,
+               "the strip should hide while the group is minimized or fullscreen");
+
+        for (const ctm::WindowIdentity& identity : identities) {
+            ShowWindow(identity.hwnd, SW_RESTORE);
+        }
+        Expect(placement.ArrangeAsNormal(
+                   moved_geometry, identities[1]).succeeded &&
+                   strip.SetVisible(true, &visibility_error),
+               "restoring the group should reapply its shared normal geometry and strip");
+        for (const ctm::WindowIdentity& identity : identities) {
+            Expect(IsIconic(identity.hwnd) == FALSE,
+                   "every minimized member should become normal again");
+        }
+
+        const ctm::WindowGroupGeometry maximized_geometry =
+            ctm::CalculateWindowGroupGeometry(
+                work_area, ctm::kV2TabStripHeight);
+        for (const ctm::WindowIdentity& identity : identities) {
+            ShowWindow(identity.hwnd, SW_MAXIMIZE);
+        }
+        Expect(placement.ArrangeAsNormal(
+                   maximized_geometry, identities[1]).succeeded &&
+                   strip.SetBounds(
+                       maximized_geometry.tab_strip_bounds, &bounds_error),
+               "managed maximize should normalize native state and reserve the monitor top for its external strip");
+        for (const ctm::WindowIdentity& identity : identities) {
+            RECT current{};
+            GetWindowRect(identity.hwnd, &current);
+            const LONG_PTR style = GetWindowLongPtrW(
+                identity.hwnd, GWL_STYLE);
+            Expect(IsZoomed(identity.hwnd) == FALSE &&
+                       RectanglesEqual(
+                           current, maximized_geometry.content_bounds),
+                   "each managed-maximized member should be native-normal below the external strip");
+            Expect((style & WS_CAPTION) != 0 &&
+                       (style & WS_SYSMENU) != 0 &&
+                       (style & WS_MINIMIZEBOX) != 0 &&
+                       (style & WS_MAXIMIZEBOX) != 0,
+                   "managed maximize should preserve the native caption and all system buttons");
+        }
+
+        for (const ctm::WindowIdentity& identity : identities) {
+            ShowWindow(identity.hwnd, SW_MINIMIZE);
+        }
+        Expect(placement.ArrangeAsNormal(
+                   maximized_geometry, identities[1]).succeeded,
+               "restoring a minimized managed-maximized group should reapply its constrained geometry");
+        for (const ctm::WindowIdentity& identity : identities) {
+            RECT current{};
+            GetWindowRect(identity.hwnd, &current);
+            Expect(IsIconic(identity.hwnd) == FALSE &&
+                       IsZoomed(identity.hwnd) == FALSE &&
+                       RectanglesEqual(
+                           current, maximized_geometry.content_bounds),
+                   "every minimized managed-maximized member should restore below the external strip");
+        }
+
+        ShowWindow(identities[1].hwnd, SW_MAXIMIZE);
+        Expect(IsZoomed(identities[1].hwnd) != FALSE,
+               "a second native maximize request should be observable as the managed restore gesture");
+        Expect(placement.ArrangeAsNormal(
+                   moved_geometry, identities[1]).succeeded &&
+                   strip.SetBounds(
+                       moved_geometry.tab_strip_bounds, &bounds_error),
+               "the managed restore gesture should recover the prior normal group rectangle");
+        for (const ctm::WindowIdentity& identity : identities) {
+            RECT current{};
+            GetWindowRect(identity.hwnd, &current);
+            Expect(IsZoomed(identity.hwnd) == FALSE &&
+                       RectanglesEqual(current, moved_geometry.content_bounds),
+                   "every member should return to native normal state and the prior rectangle");
         }
 
         ctm::WindowIdentity stale_identity = identities[1];

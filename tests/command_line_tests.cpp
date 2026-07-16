@@ -80,7 +80,7 @@ void TestExperimentOption() {
     constexpr std::array arguments = {std::wstring_view(L"--experiment")};
     const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
     Expect(result.command == ctm::Command::Experiment,
-           "--experiment should select the Phase 2 experiment command");
+           "--experiment should select the retained taskbar-method experiment command");
     Expect(result.error_message.empty(),
            "--experiment should not produce an error");
 }

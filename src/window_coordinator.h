@@ -22,6 +22,22 @@ struct WindowGroupGeometry {
 [[nodiscard]] WindowGroupGeometry CalculateWindowGroupGeometry(
     const RECT& group_bounds,
     int tab_strip_height) noexcept;
+[[nodiscard]] WindowGroupGeometry
+CalculateWindowGroupGeometryFromContentBounds(
+    const RECT& content_bounds,
+    const RECT& work_area,
+    int tab_strip_height) noexcept;
+[[nodiscard]] int ScalePixelsForDpi(int pixels, UINT dpi) noexcept;
+[[nodiscard]] bool RectanglesEqual(
+    const RECT& left,
+    const RECT& right) noexcept;
+[[nodiscard]] bool RectangleFitsWithin(
+    const RECT& rectangle,
+    const RECT& bounds) noexcept;
+[[nodiscard]] bool IsFullscreenRectangle(
+    const RECT& rectangle,
+    const RECT& monitor_bounds,
+    int tolerance) noexcept;
 
 struct WindowCoordinationResult {
     bool succeeded = false;
@@ -56,6 +72,9 @@ public:
     [[nodiscard]] std::size_t InvalidateHandles(
         std::span<const HWND> destroyed_handles) noexcept;
     [[nodiscard]] WindowCoordinationResult Arrange(
+        const WindowGroupGeometry& geometry,
+        const WindowIdentity& active_identity);
+    [[nodiscard]] WindowCoordinationResult ArrangeAsNormal(
         const WindowGroupGeometry& geometry,
         const WindowIdentity& active_identity);
     [[nodiscard]] WindowGroupRestoreReport RestoreAll();

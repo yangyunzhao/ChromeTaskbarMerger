@@ -54,6 +54,9 @@ public:
     [[nodiscard]] bool SetBounds(
         const RECT& bounds,
         DWORD* error_code) noexcept;
+    [[nodiscard]] bool SetVisible(
+        bool visible,
+        DWORD* error_code) noexcept;
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsHealthy() const noexcept;
@@ -76,6 +79,7 @@ private:
         WPARAM wparam,
         LPARAM lparam) noexcept;
     void RecalculateLayout() noexcept;
+    void UpdateDpiResources() noexcept;
     void Paint() noexcept;
 
     HINSTANCE instance_ = nullptr;
@@ -84,6 +88,8 @@ private:
     std::vector<TabStripItem> items_;
     WindowIdentity active_identity_;
     TabStripLayout layout_;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
+    HFONT font_ = nullptr;
 };
 
 }  // namespace ctm

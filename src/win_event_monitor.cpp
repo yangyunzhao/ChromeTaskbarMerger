@@ -43,6 +43,8 @@ std::optional<ChromeWindowEventKind> TranslateWinEvent(
             return ChromeWindowEventKind::Hidden;
         case EVENT_OBJECT_NAMECHANGE:
             return ChromeWindowEventKind::NameChanged;
+        case EVENT_OBJECT_LOCATIONCHANGE:
+            return ChromeWindowEventKind::LocationChanged;
         default:
             return std::nullopt;
     }

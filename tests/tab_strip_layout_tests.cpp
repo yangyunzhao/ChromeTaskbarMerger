@@ -110,6 +110,23 @@ void TestInvalidAndOutsideGeometryIsRejected() {
            "a point outside the client should hit nothing");
 }
 
+void TestDpiScaledLayout() {
+    const ctm::TabStripLayout at_100 =
+        ctm::CalculateTabStripLayout({.cx = 900, .cy = 38}, 3, 96);
+    const ctm::TabStripLayout at_200 =
+        ctm::CalculateTabStripLayout({.cx = 1800, .cy = 76}, 3, 192);
+    Expect(at_100.items.size() == 3 && at_200.items.size() == 3,
+           "supported DPI values should retain all tab hit targets");
+    if (at_100.items.size() == 3 && at_200.items.size() == 3) {
+        const int close_100 = at_100.items[0].close_bounds.right -
+                              at_100.items[0].close_bounds.left;
+        const int close_200 = at_200.items[0].close_bounds.right -
+                              at_200.items[0].close_bounds.left;
+        Expect(close_200 == close_100 * 2,
+               "the close target should double at 200 percent DPI");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -117,6 +134,7 @@ int main() {
     TestThreeTabsAreOrderedAndSeparated();
     TestFiveNarrowTabsRemainHittable();
     TestInvalidAndOutsideGeometryIsRejected();
+    TestDpiScaledLayout();
 
     if (failures != 0) {
         std::cerr << failures << " tab-strip layout test(s) failed.\n";

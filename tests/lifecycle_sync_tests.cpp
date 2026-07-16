@@ -163,6 +163,47 @@ void TestNativeEventTranslationFiltersChildNoise() {
                EVENT_SYSTEM_MINIMIZEEND, OBJID_WINDOW, CHILDID_SELF) ==
                ctm::ChromeWindowEventKind::MinimizeEnded,
            "minimize-end should be translated");
+    Expect(ctm::TranslateWinEvent(
+               EVENT_OBJECT_LOCATIONCHANGE, OBJID_WINDOW, CHILDID_SELF) ==
+               ctm::ChromeWindowEventKind::LocationChanged,
+           "top-level location changes should reach geometry synchronization");
+}
+
+void TestGeometryScheduleCoalescesAtInteractiveCadence() {
+    ctm::GeometrySyncSchedule schedule(
+        std::chrono::milliseconds(16),
+        std::chrono::milliseconds(32));
+    schedule.RecordEvent(
+        {.kind = ctm::ChromeWindowEventKind::LocationChanged,
+         .hwnd = TestHandle(30)},
+        AtMilliseconds(100));
+    schedule.RecordEvent(
+        {.kind = ctm::ChromeWindowEventKind::LocationChanged,
+         .hwnd = TestHandle(31)},
+        AtMilliseconds(110));
+    Expect(schedule.pending_event_count() == 2 &&
+               schedule.location_hint() == TestHandle(31) &&
+               !schedule.IsDue(AtMilliseconds(125)) &&
+               schedule.IsDue(AtMilliseconds(126)),
+           "location changes should debounce while retaining the latest driver");
+
+    schedule.RecordEvent(
+        {.kind = ctm::ChromeWindowEventKind::MinimizeStarted,
+         .hwnd = TestHandle(31)},
+        AtMilliseconds(127));
+    schedule.RecordEvent(
+        {.kind = ctm::ChromeWindowEventKind::MinimizeEnded,
+         .hwnd = TestHandle(31)},
+        AtMilliseconds(128));
+    Expect(schedule.IsDue(AtMilliseconds(132)) &&
+               schedule.minimize_started_hint() == TestHandle(31) &&
+               schedule.minimize_ended_hint() == TestHandle(31),
+           "continuous geometry events should be bounded by maximum delay");
+    schedule.MarkSynchronized();
+    Expect(!schedule.pending() && schedule.location_hint() == nullptr &&
+               schedule.minimize_started_hint() == nullptr &&
+               schedule.minimize_ended_hint() == nullptr,
+           "successful geometry synchronization should clear the batch");
 }
 
 void TestMessageEncodingIsLossless() {
@@ -226,6 +267,7 @@ int main() {
     TestDestroyHintsAreUniqueAndClearedAfterSynchronization();
     TestTransientDeferralPreservesLifecycleEvidence();
     TestNativeEventTranslationFiltersChildNoise();
+    TestGeometryScheduleCoalescesAtInteractiveCadence();
     TestMessageEncodingIsLossless();
     TestOutOfContextMonitorPostsOnlyToTheOwnerMessageQueue();
 

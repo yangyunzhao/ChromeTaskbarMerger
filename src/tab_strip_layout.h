@@ -32,7 +32,8 @@ struct TabHitResult {
 
 [[nodiscard]] TabStripLayout CalculateTabStripLayout(
     SIZE client_size,
-    std::size_t tab_count);
+    std::size_t tab_count,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 [[nodiscard]] TabHitResult HitTestTabStrip(
     const TabStripLayout& layout,
     POINT point) noexcept;
