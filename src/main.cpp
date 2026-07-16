@@ -9,6 +9,7 @@
 #include "single_instance.h"
 #include "taskbar_experiment.h"
 #include "tray_app.h"
+#include "v2_experiment.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -34,6 +35,7 @@ void PrintHelp() {
         << L"  --autostart     Internal Windows-login startup entry.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
+        << L"  --v2-experiment Run the isolated V2 Phase 1 native-tab experiment.\n"
         << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
         << L"  --restore-all   Explicitly restore all identifiable Chrome buttons.\n\n"
         << L"With no option, start the V1 notification-area application.\n"
@@ -243,6 +245,19 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
                 return 4;
             }
             return ctm::RunTaskbarExperiment(active_logger);
+        }
+
+        case ctm::Command::V2Experiment: {
+            if (recovery_path.empty()) {
+                std::wcerr << L"Error: " << recovery_path_error << L'\n';
+                return 5;
+            }
+            ctm::SingleInstanceGuard guard;
+            if (!AcquireExclusiveDiagnosticInstance(&guard, active_logger)) {
+                return 4;
+            }
+            return ctm::RunV2Experiment(
+                instance, active_logger, recovery_path);
         }
 
         case ctm::Command::Manage: {

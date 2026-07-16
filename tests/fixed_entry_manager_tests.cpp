@@ -1,9 +1,13 @@
 #include "fixed_entry_manager.h"
+#include "tab_group_model.h"
+#include "v2_taskbar_readiness.h"
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +58,10 @@ public:
     [[nodiscard]] bool Save(
         const std::span<const ctm::TaskbarMutationState> states,
         std::wstring* const error_message) override {
+        if (event_log != nullptr) {
+            event_log->push_back(
+                "save:" + std::to_string(states.size()));
+        }
         ++save_attempts;
         if (fail_on_attempt != 0 && save_attempts == fail_on_attempt) {
             if (error_message != nullptr) {
@@ -70,7 +78,44 @@ public:
 
     int fail_on_attempt = 0;
     int save_attempts = 0;
+    std::vector<std::string>* event_log = nullptr;
     std::vector<std::vector<ctm::TaskbarMutationState>> saved_states;
+};
+
+class RecordingReadinessGate final
+    : public ctm::IFixedEntryReadinessGate {
+public:
+    [[nodiscard]] bool ConfirmReadyAfterRecoveryWrite(
+        const ctm::WindowIdentity& identity,
+        std::wstring* const error_message) override {
+        confirmed_handles.push_back(HandleValue(identity.hwnd));
+        if (event_log != nullptr) {
+            event_log->push_back("gate:confirm");
+        }
+        if (!ready) {
+            if (error_message != nullptr) {
+                *error_message = L"Configured readiness rejection.";
+            }
+            return false;
+        }
+        if (error_message != nullptr) {
+            error_message->clear();
+        }
+        return true;
+    }
+
+    void RecoveryIntentCleared(
+        const ctm::WindowIdentity& identity) noexcept override {
+        cleared_handles.push_back(HandleValue(identity.hwnd));
+        if (event_log != nullptr) {
+            event_log->push_back("gate:clear");
+        }
+    }
+
+    bool ready = true;
+    std::vector<std::string>* event_log = nullptr;
+    std::vector<std::uintptr_t> confirmed_handles;
+    std::vector<std::uintptr_t> cleared_handles;
 };
 
 class FakeTaskbarController final
@@ -98,6 +143,9 @@ public:
             .kind = ctm::FixedEntryOperationKind::Remove,
             .identity = identity,
         });
+        if (event_log != nullptr) {
+            event_log->push_back("taskbar:remove");
+        }
 
         int& remaining_failures =
             remove_failures_[HandleValue(snapshot.hwnd)];
@@ -135,6 +183,9 @@ public:
             .kind = ctm::FixedEntryOperationKind::Restore,
             .identity = state->identity,
         });
+        if (event_log != nullptr) {
+            event_log->push_back("taskbar:restore");
+        }
         int& remaining_failures =
             restore_failures_[HandleValue(state->identity.hwnd)];
         if (remaining_failures > 0) {
@@ -184,6 +235,7 @@ public:
     }
 
     std::vector<FakeCall> calls;
+    std::vector<std::string>* event_log = nullptr;
 
 private:
     std::unordered_map<std::uintptr_t, int> remove_failures_;
@@ -608,6 +660,148 @@ void TestRecoveryWriteAheadFailureBlocksTaskbarMutation() {
            "a blocked removal should leave no in-memory obligation");
 }
 
+void TestReadinessGateRunsAfterWriteAheadAndBeforeRemoval() {
+    std::vector<std::string> events;
+    FakeTaskbarController controller;
+    controller.event_log = &events;
+    RecordingRecoveryStore store;
+    store.event_log = &events;
+    RecordingReadinessGate gate;
+    gate.event_log = &events;
+    ctm::FixedEntryManager manager(&controller, &store, &gate);
+    const std::vector windows = {MakeWindow(1), MakeWindow(2)};
+
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(report.succeeded,
+           "a ready internal tab should allow the fake removal");
+    const auto save = std::find(events.begin(), events.end(), "save:1");
+    const auto confirm =
+        std::find(events.begin(), events.end(), "gate:confirm");
+    const auto removal =
+        std::find(events.begin(), events.end(), "taskbar:remove");
+    Expect(save != events.end() && confirm != events.end() &&
+               removal != events.end() && save < confirm &&
+               confirm < removal,
+           "recovery write-ahead must precede readiness confirmation and DeleteTab");
+
+    events.clear();
+    const ctm::FixedEntryReport restored = manager.RestoreAll();
+    Expect(restored.succeeded &&
+               std::find(events.begin(), events.end(), "gate:clear") !=
+                   events.end(),
+           "successful restoration should clear the gate's recovery evidence");
+}
+
+void TestReadinessRejectionRollsBackWithoutTaskbarMutation() {
+    std::vector<std::string> events;
+    FakeTaskbarController controller;
+    controller.event_log = &events;
+    RecordingRecoveryStore store;
+    store.event_log = &events;
+    RecordingReadinessGate gate;
+    gate.ready = false;
+    gate.event_log = &events;
+    ctm::FixedEntryManager manager(&controller, &store, &gate);
+    const std::vector windows = {MakeWindow(1), MakeWindow(2)};
+
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(!report.succeeded && !report.readiness_error.empty(),
+           "a readiness rejection should stop synchronization with a reason");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 0,
+           "a readiness rejection must not call the taskbar controller");
+    Expect(manager.removed_window_count() == 0 &&
+               !store.saved_states.empty() &&
+               store.saved_states.back().empty(),
+           "a readiness rejection should durably roll back its write-ahead");
+    Expect(gate.cleared_handles.size() == 1,
+           "a rolled-back intent should be cleared from the readiness model");
+}
+
+void TestReadinessRollbackPersistenceFailureRemainsRecoverable() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    store.fail_on_attempt = 2;
+    RecordingReadinessGate gate;
+    gate.ready = false;
+    ctm::FixedEntryManager manager(&controller, &store, &gate);
+    const std::vector windows = {MakeWindow(1), MakeWindow(2)};
+
+    const ctm::FixedEntryReport report =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(!report.succeeded && !report.persistence_error.empty(),
+           "a failed readiness rollback save should report a persistence failure");
+    Expect(controller.Count(ctm::FixedEntryOperationKind::Remove) == 0,
+           "rollback persistence failure must still occur before taskbar removal");
+    Expect(manager.removed_window_count() == 1,
+           "the durable write-ahead should remain tracked until it can be cleared");
+
+    const ctm::FixedEntryReport restored = manager.RestoreAll();
+    Expect(restored.succeeded && manager.removed_window_count() == 0 &&
+               !store.saved_states.empty() &&
+               store.saved_states.back().empty(),
+           "a retry should idempotently AddTab and clear the stale write-ahead");
+    Expect(gate.cleared_handles.size() == 1,
+           "successful retry should clear the model's recovery intent");
+}
+
+void TestRealTabGateBlocksMissingTabAndActivationEvidence() {
+    FakeTaskbarController controller;
+    RecordingRecoveryStore store;
+    const std::vector windows = {MakeWindow(1), MakeWindow(2)};
+    const std::vector candidates = {
+        ctm::TabGroupCandidate{
+            .identity = {
+                .hwnd = windows[0].hwnd,
+                .process_id = windows[0].process_id,
+                .thread_id = windows[0].thread_id,
+                .process_creation_time = windows[0].process_creation_time,
+                .class_name = windows[0].class_name,
+            },
+            .title = windows[0].title,
+        },
+        ctm::TabGroupCandidate{
+            .identity = {
+                .hwnd = windows[1].hwnd,
+                .process_id = windows[1].process_id,
+                .thread_id = windows[1].thread_id,
+                .process_creation_time = windows[1].process_creation_time,
+                .class_name = windows[1].class_name,
+            },
+            .title = windows[1].title,
+        },
+    };
+    ctm::TabGroupModel model;
+    static_cast<void>(model.Synchronize(candidates, candidates[0].identity));
+    model.SetTabStripHealthy(true);
+    ctm::TabGroupTaskbarReadinessGate gate(&model);
+    ctm::FixedEntryManager manager(&controller, &store, &gate);
+
+    const ctm::FixedEntryReport missing_tab =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(!missing_tab.succeeded &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove) == 0,
+           "a missing internal tab must block every taskbar removal call");
+
+    Expect(model.MarkTabCreated(candidates[1].identity, true),
+           "the second synthetic tab should be creatable");
+    const ctm::FixedEntryReport missing_activation =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(!missing_activation.succeeded &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove) == 0,
+           "an unverified activation path must still block taskbar removal");
+
+    Expect(model.MarkActivationPathVerified(candidates[1].identity, true),
+           "the second synthetic activation path should become verified");
+    const ctm::FixedEntryReport ready =
+        manager.Synchronize(windows, TestHandle(1));
+    Expect(ready.succeeded &&
+               controller.Count(ctm::FixedEntryOperationKind::Remove) == 1,
+           "only the fully ready internal tab may reach the taskbar controller");
+    static_cast<void>(manager.RestoreAll());
+}
+
 void TestTaskbarRecreationForgetsShellStateAndReapplies() {
     FakeTaskbarController controller;
     RecordingRecoveryStore store;
@@ -683,6 +877,10 @@ int main() {
     TestTransitionToZeroWindowsRestoresTrackedEntries();
     TestRecoveryWriteAheadPrecedesEveryRemoval();
     TestRecoveryWriteAheadFailureBlocksTaskbarMutation();
+    TestReadinessGateRunsAfterWriteAheadAndBeforeRemoval();
+    TestReadinessRejectionRollsBackWithoutTaskbarMutation();
+    TestReadinessRollbackPersistenceFailureRemainsRecoverable();
+    TestRealTabGateBlocksMissingTabAndActivationEvidence();
     TestTaskbarRecreationForgetsShellStateAndReapplies();
     TestPersistedRecoveryStatesCanBeAdoptedAndRestored();
 

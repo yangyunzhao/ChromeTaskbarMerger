@@ -130,6 +130,9 @@ FixedEntryReport FixedEntryManager::Synchronize(
     while (index < removed_windows_.size()) {
         TaskbarMutationState& state = removed_windows_[index];
         if (!state.NeedsRestore()) {
+            if (readiness_gate_ != nullptr) {
+                readiness_gate_->RecoveryIntentCleared(state.identity);
+            }
             removed_windows_.erase(removed_windows_.begin() + index);
             recovery_state_changed = true;
             continue;
@@ -153,6 +156,9 @@ FixedEntryReport FixedEntryManager::Synchronize(
             .result = result,
         });
         if (result.succeeded && !state.NeedsRestore()) {
+            if (readiness_gate_ != nullptr) {
+                readiness_gate_->RecoveryIntentCleared(identity);
+            }
             removed_windows_.erase(removed_windows_.begin() + index);
             recovery_state_changed = true;
             continue;
@@ -217,6 +223,35 @@ FixedEntryReport FixedEntryManager::Synchronize(
             break;
         }
 
+        if (readiness_gate_ != nullptr) {
+            std::wstring readiness_error;
+            if (!readiness_gate_->ConfirmReadyAfterRecoveryWrite(
+                    planned_state.identity, &readiness_error)) {
+                removed_windows_.pop_back();
+                std::wstring rollback_error;
+                if (!PersistRecoveryState(&rollback_error)) {
+                    removed_windows_.push_back(planned_state);
+                    report.persistence_error = std::move(rollback_error);
+                } else {
+                    readiness_gate_->RecoveryIntentCleared(
+                        planned_state.identity);
+                }
+
+                TaskbarOperationResult blocked;
+                blocked.win32_error = ERROR_NOT_READY;
+                blocked.message =
+                    L"The internal-tab readiness gate rejected DeleteTab.";
+                report.operations.push_back({
+                    .kind = FixedEntryOperationKind::Remove,
+                    .identity = planned_state.identity,
+                    .result = std::move(blocked),
+                });
+                report.succeeded = false;
+                report.readiness_error = std::move(readiness_error);
+                break;
+            }
+        }
+
         TaskbarMutationState state;
         TaskbarOperationResult result = controller_->RemoveWindow(
             snapshot, TaskbarMethod::TaskbarList, &state);
@@ -242,6 +277,9 @@ FixedEntryReport FixedEntryManager::Synchronize(
             report.persistence_error = std::move(persistence_error);
             break;
         }
+        if (!restoration_required && readiness_gate_ != nullptr) {
+            readiness_gate_->RecoveryIntentCleared(identity);
+        }
         if (!result.succeeded || !restoration_required) {
             report.succeeded = false;
         }
@@ -252,6 +290,9 @@ FixedEntryReport FixedEntryManager::Synchronize(
     } else if (!report.persistence_error.empty()) {
         report.message =
             L"Recovery state persistence failed; management must pause.";
+    } else if (!report.readiness_error.empty()) {
+        report.message =
+            L"The internal-tab readiness gate blocked taskbar removal.";
     } else {
         report.message = L"One or more taskbar removals failed.";
     }
@@ -273,6 +314,9 @@ FixedEntryReport FixedEntryManager::RestoreAll() {
     while (index < removed_windows_.size()) {
         TaskbarMutationState& state = removed_windows_[index];
         if (!state.NeedsRestore()) {
+            if (readiness_gate_ != nullptr) {
+                readiness_gate_->RecoveryIntentCleared(state.identity);
+            }
             removed_windows_.erase(removed_windows_.begin() + index);
             recovery_state_changed = true;
             continue;
@@ -286,6 +330,9 @@ FixedEntryReport FixedEntryManager::RestoreAll() {
             .result = result,
         });
         if (result.succeeded && !state.NeedsRestore()) {
+            if (readiness_gate_ != nullptr) {
+                readiness_gate_->RecoveryIntentCleared(identity);
+            }
             removed_windows_.erase(removed_windows_.begin() + index);
             recovery_state_changed = true;
             continue;
@@ -344,6 +391,11 @@ bool FixedEntryManager::AdoptRecoveryStates(
 
 bool FixedEntryManager::ResetAfterTaskbarRecreation(
     std::wstring* const error_message) {
+    if (readiness_gate_ != nullptr) {
+        for (const TaskbarMutationState& state : removed_windows_) {
+            readiness_gate_->RecoveryIntentCleared(state.identity);
+        }
+    }
     removed_windows_.clear();
     return PersistRecoveryState(error_message);
 }

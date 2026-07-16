@@ -116,3 +116,37 @@ add_test(
     NAME v2_tab_group_model
     COMMAND ChromeTaskbarMergerTabGroupModelTests
 )
+
+add_executable(
+    ChromeTaskbarMergerTabStripLayoutTests
+    tab_strip_layout_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerTabStripLayoutTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerTabStripLayoutTests)
+
+add_test(
+    NAME v2_tab_strip_layout
+    COMMAND ChromeTaskbarMergerTabStripLayoutTests
+)
+
+add_executable(
+    ChromeTaskbarMergerWindowGroupIntegrationTests
+    window_group_integration_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerWindowGroupIntegrationTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerWindowGroupIntegrationTests)
+
+add_test(
+    NAME v2_window_group_integration
+    COMMAND ChromeTaskbarMergerWindowGroupIntegrationTests
+)

@@ -18,6 +18,8 @@ class IWindowActivationGateway {
 public:
     virtual ~IWindowActivationGateway() = default;
 
+    [[nodiscard]] virtual WindowActivationResult Verify(
+        const WindowIdentity& identity) = 0;
     [[nodiscard]] virtual WindowActivationResult Activate(
         const WindowIdentity& identity) = 0;
 };
@@ -35,6 +37,8 @@ public:
                              IWindowActivationGateway* gateway) noexcept
         : model_(model), gateway_(gateway) {}
 
+    [[nodiscard]] TabActivationReport Verify(
+        const WindowIdentity& identity);
     [[nodiscard]] TabActivationReport Activate(
         const WindowIdentity& identity);
 

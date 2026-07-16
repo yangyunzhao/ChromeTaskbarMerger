@@ -1,5 +1,6 @@
 #include "tab_activation.h"
 #include "tab_group_model.h"
+#include "v2_taskbar_readiness.h"
 #include "window_identity.h"
 
 #include <Windows.h>
@@ -96,6 +97,23 @@ void MakeTaskbarEligible(ctm::TabGroupModel* const model,
 class FakeWindowActivationGateway final
     : public ctm::IWindowActivationGateway {
 public:
+    [[nodiscard]] ctm::WindowActivationResult Verify(
+        const ctm::WindowIdentity& identity) override {
+        verification_calls.push_back(identity);
+        if (fail_next_verification) {
+            fail_next_verification = false;
+            return {
+                .succeeded = false,
+                .win32_error = ERROR_INVALID_WINDOW_HANDLE,
+                .message = L"Configured verification failure.",
+            };
+        }
+        return {
+            .succeeded = true,
+            .message = L"Configured verification success.",
+        };
+    }
+
     [[nodiscard]] ctm::WindowActivationResult Activate(
         const ctm::WindowIdentity& identity) override {
         calls.push_back(identity);
@@ -114,6 +132,8 @@ public:
     }
 
     bool fail_next = false;
+    bool fail_next_verification = false;
+    std::vector<ctm::WindowIdentity> verification_calls;
     std::vector<ctm::WindowIdentity> calls;
 };
 
@@ -280,6 +300,25 @@ void TestActivationGatewayIsInjectableAndFailureSafe() {
 
     FakeWindowActivationGateway gateway;
     ctm::TabActivationCoordinator activation(&model, &gateway);
+    Expect(model.MarkTabCreated(candidates[2].identity, true),
+           "the third synthetic internal tab should exist before verification");
+    gateway.fail_next_verification = true;
+    const ctm::TabActivationReport verification_failed =
+        activation.Verify(candidates[2].identity);
+    Expect(!verification_failed.succeeded &&
+               verification_failed.gateway_called &&
+               verification_failed.win32_error ==
+                   ERROR_INVALID_WINDOW_HANDLE,
+           "an injected verification failure should retain its error code");
+    const ctm::TabActivationReport verification_succeeded =
+        activation.Verify(candidates[2].identity);
+    Expect(verification_succeeded.succeeded &&
+               verification_succeeded.gateway_called &&
+               model.CanActivate(candidates[2].identity),
+           "successful injected verification should make the tab activatable");
+
+    Expect(model.MarkActivationPathVerified(candidates[2].identity, false),
+           "the synthetic third activation path should be reset");
     const ctm::TabActivationReport not_ready =
         activation.Activate(candidates[2].identity);
     Expect(!not_ready.succeeded && !not_ready.gateway_called &&
@@ -328,6 +367,28 @@ void TestWindowIdentityHelpers() {
            "different HWNDs must not match even when values are equal");
 }
 
+void TestFixedEntryReadinessGateUsesTheCompleteModelInvariant() {
+    ctm::TabGroupModel model;
+    const ctm::TabGroupCandidate candidate = MakeCandidate(41);
+    static_cast<void>(model.Synchronize(std::span(&candidate, 1)));
+    MakeActivatable(&model, candidate.identity);
+    ctm::TabGroupTaskbarReadinessGate gate(&model);
+
+    std::wstring error;
+    Expect(!gate.ConfirmReadyAfterRecoveryWrite(candidate.identity, &error) &&
+               !error.empty(),
+           "an unhealthy strip should make the real fixed-entry gate reject removal");
+    gate.RecoveryIntentCleared(candidate.identity);
+    model.SetTabStripHealthy(true);
+    Expect(gate.ConfirmReadyAfterRecoveryWrite(candidate.identity, &error) &&
+               error.empty() &&
+               model.CanRemoveFromTaskbar(candidate.identity),
+           "the real fixed-entry gate should accept all four safety conditions");
+    gate.RecoveryIntentCleared(candidate.identity);
+    Expect(!model.CanRemoveFromTaskbar(candidate.identity),
+           "clearing the durable intent should immediately close the taskbar gate");
+}
+
 }  // namespace
 
 int main() {
@@ -339,6 +400,7 @@ int main() {
     TestReachabilityGateRequiresAllEvidence();
     TestActivationGatewayIsInjectableAndFailureSafe();
     TestWindowIdentityHelpers();
+    TestFixedEntryReadinessGateUsesTheCompleteModelInvariant();
 
     if (failures != 0) {
         std::cerr << failures << " V2 tab-group model test(s) failed.\n";

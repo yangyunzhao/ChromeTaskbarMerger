@@ -85,6 +85,17 @@ void TestExperimentOption() {
            "--experiment should not produce an error");
 }
 
+void TestV2ExperimentOption() {
+    constexpr std::array arguments = {
+        std::wstring_view(L"--v2-experiment")};
+    const ctm::CommandLineOptions result =
+        ctm::ParseCommandLine(arguments);
+    Expect(result.command == ctm::Command::V2Experiment,
+           "--v2-experiment should select the isolated V2 Phase 1 command");
+    Expect(result.error_message.empty(),
+           "--v2-experiment should not produce an error");
+}
+
 void TestManageOption() {
     constexpr std::array arguments = {std::wstring_view(L"--manage")};
     const ctm::CommandLineOptions result = ctm::ParseCommandLine(arguments);
@@ -595,6 +606,7 @@ int main() {
     TestAutoStartOption();
     TestListOption();
     TestExperimentOption();
+    TestV2ExperimentOption();
     TestManageOption();
     TestRestoreAllOption();
     TestUnknownOption();

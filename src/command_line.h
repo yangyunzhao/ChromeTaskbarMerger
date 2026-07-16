@@ -11,6 +11,7 @@ enum class Command {
     AutoStart,
     ListWindows,
     Experiment,
+    V2Experiment,
     Manage,
     RestoreAll,
     ShowHelp,

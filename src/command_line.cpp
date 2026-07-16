@@ -36,6 +36,10 @@ CommandLineOptions ParseCommandLine(
         return {.command = Command::Experiment};
     }
 
+    if (option == L"--v2-experiment") {
+        return {.command = Command::V2Experiment};
+    }
+
     if (option == L"--manage") {
         return {.command = Command::Manage};
     }

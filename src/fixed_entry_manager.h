@@ -30,15 +30,30 @@ struct FixedEntryReport {
     std::size_t already_removed_count = 0;
     std::vector<FixedEntryOperation> operations;
     std::wstring persistence_error;
+    std::wstring readiness_error;
     std::wstring message;
+};
+
+class IFixedEntryReadinessGate {
+public:
+    virtual ~IFixedEntryReadinessGate() = default;
+
+    [[nodiscard]] virtual bool ConfirmReadyAfterRecoveryWrite(
+        const WindowIdentity& identity,
+        std::wstring* error_message) = 0;
+    virtual void RecoveryIntentCleared(
+        const WindowIdentity& identity) noexcept = 0;
 };
 
 class FixedEntryManager final {
 public:
     explicit FixedEntryManager(
         ITaskbarMutationController* controller,
-        IRecoveryStateStore* recovery_store = nullptr)
-        : controller_(controller), recovery_store_(recovery_store) {}
+        IRecoveryStateStore* recovery_store = nullptr,
+        IFixedEntryReadinessGate* readiness_gate = nullptr)
+        : controller_(controller),
+          recovery_store_(recovery_store),
+          readiness_gate_(readiness_gate) {}
 
     FixedEntryManager(const FixedEntryManager&) = delete;
     FixedEntryManager& operator=(const FixedEntryManager&) = delete;
@@ -74,6 +89,7 @@ private:
 
     ITaskbarMutationController* controller_ = nullptr;
     IRecoveryStateStore* recovery_store_ = nullptr;
+    IFixedEntryReadinessGate* readiness_gate_ = nullptr;
     std::optional<WindowIdentity> main_entry_;
     std::vector<TaskbarMutationState> removed_windows_;
     std::size_t last_window_count_ = 0;

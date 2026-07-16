@@ -93,10 +93,22 @@ add_library(
         src/tab_activation.h
         src/tab_group_model.cpp
         src/tab_group_model.h
+        src/tab_strip_layout.cpp
+        src/tab_strip_layout.h
+        src/tab_strip_window.cpp
+        src/tab_strip_window.h
         src/tray_app.cpp
         src/tray_app.h
+        src/v2_experiment.cpp
+        src/v2_experiment.h
+        src/v2_taskbar_readiness.cpp
+        src/v2_taskbar_readiness.h
+        src/window_coordinator.cpp
+        src/window_coordinator.h
         src/window_identity.cpp
         src/window_identity.h
+        src/window_identity_query.cpp
+        src/window_identity_query.h
         src/windowtabs_presence.cpp
         src/windowtabs_presence.h
 )
