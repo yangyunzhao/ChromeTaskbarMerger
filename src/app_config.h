@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ctm {
@@ -16,12 +17,33 @@ inline constexpr std::chrono::milliseconds kMinimumWindowTabsCheckInterval{
     500};
 inline constexpr std::chrono::milliseconds kMaximumWindowTabsCheckInterval{
     60000};
+inline constexpr int kDefaultTabStripWidthPercent = 60;
+inline constexpr int kMinimumTabStripWidthPercent = 25;
+inline constexpr int kMaximumTabStripWidthPercent = 100;
+inline constexpr int kDefaultTabWidthPixels = 180;
+inline constexpr int kMinimumTabWidthPixels = 80;
+inline constexpr int kMaximumTabWidthPixels = 400;
+
+enum class TabProvider {
+    BuiltIn,
+    WindowTabs,
+};
+
+enum class TabStripAlignment {
+    Left,
+    Center,
+    Right,
+};
 
 struct AppConfig {
     std::chrono::milliseconds scan_interval = kDefaultScanInterval;
     std::chrono::milliseconds windowtabs_check_interval =
         kDefaultWindowTabsCheckInterval;
     bool start_with_windows = false;
+    TabProvider tab_provider = TabProvider::BuiltIn;
+    TabStripAlignment tab_strip_alignment = TabStripAlignment::Center;
+    int tab_strip_width_percent = kDefaultTabStripWidthPercent;
+    int tab_width_pixels = kDefaultTabWidthPixels;
 };
 
 struct AppConfigLoadResult {
@@ -42,5 +64,14 @@ struct AppConfigSaveResult {
 [[nodiscard]] AppConfigSaveResult SaveStartWithWindowsSetting(
     const std::filesystem::path& path,
     bool enabled);
+
+[[nodiscard]] AppConfigSaveResult SaveTabProviderSetting(
+    const std::filesystem::path& path,
+    TabProvider provider);
+
+[[nodiscard]] std::string_view TabProviderConfigValue(
+    TabProvider provider) noexcept;
+[[nodiscard]] std::wstring_view TabProviderDisplayName(
+    TabProvider provider) noexcept;
 
 }  // namespace ctm

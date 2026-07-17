@@ -38,9 +38,10 @@ void PrintHelp() {
         << L"  --v2-experiment Run the isolated V2 Phase 4 persistent-recovery experiment.\n"
         << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
         << L"  --restore-all   Restore identifiable Chrome buttons and valid V2 layouts.\n\n"
-        << L"With no option, start the V1 notification-area application.\n"
-        << L"ChromeTaskbarMerger.ini beside the executable controls the scan "
-           L"interval and Windows-login startup.\n";
+        << L"With no option, start the notification-area application using "
+           L"the configured tab provider.\n"
+        << L"ChromeTaskbarMerger.ini beside the executable selects built-in "
+           L"or WindowTabs tabs and controls layout, scanning, and Windows-login startup.\n";
 }
 
 int ListChromeWindows(ctm::Logger* const logger) {
@@ -149,7 +150,14 @@ int ListChromeWindows(ctm::Logger* const logger) {
             std::to_wstring(
                 result.config.windowtabs_check_interval.count()) +
             L"; start_with_windows=" +
-            (result.config.start_with_windows ? L"true" : L"false") + L'.');
+            (result.config.start_with_windows ? L"true" : L"false") +
+            L"; tab_provider=" +
+            std::wstring(TabProviderConfigValue(result.config.tab_provider).begin(),
+                         TabProviderConfigValue(result.config.tab_provider).end()) +
+            L"; tab_strip_width_percent=" +
+            std::to_wstring(result.config.tab_strip_width_percent) +
+            L"; tab_width_px=" +
+            std::to_wstring(result.config.tab_width_pixels) + L'.');
     }
     return result;
 }
@@ -218,9 +226,12 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
     switch (options.command) {
         case ctm::Command::Run:
         case ctm::Command::AutoStart: {
-            if (recovery_path.empty()) {
+            if (recovery_path.empty() || group_recovery_path.empty()) {
                 if (active_logger != nullptr) {
-                    active_logger->Error(recovery_path_error);
+                    active_logger->Error(
+                        recovery_path.empty()
+                            ? recovery_path_error
+                            : group_recovery_path_error);
                 }
                 return 5;
             }
@@ -235,6 +246,7 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
                 active_logger,
                 config.config,
                 recovery_path,
+                group_recovery_path,
                 configuration_path,
                 executable_path,
                 options.command == ctm::Command::AutoStart);

@@ -1,6 +1,7 @@
 #include "app_config.h"
 #include "process_identity.h"
 #include "recovery_journal.h"
+#include "restore_command.h"
 #include "single_instance.h"
 #include "tray_app.h"
 
@@ -141,6 +142,13 @@ void TestMissingConfigurationUsesDefaults() {
            "check default");
     Expect(!result.config.start_with_windows,
            "a missing configuration should keep login startup disabled");
+    Expect(result.config.tab_provider == ctm::TabProvider::BuiltIn,
+           "a missing V1 configuration should migrate to built-in tabs");
+    Expect(result.config.tab_strip_alignment ==
+               ctm::TabStripAlignment::Center &&
+               result.config.tab_strip_width_percent == 60 &&
+               result.config.tab_width_pixels == 180,
+           "a missing configuration should use safe built-in layout defaults");
 }
 
 void TestValidConfigurationLoadsScanInterval() {
@@ -153,7 +161,11 @@ void TestValidConfigurationLoadsScanInterval() {
         path,
         "[ChromeTaskbarMerger]\r\nscan_interval_ms=1250\r\n"
         "windowtabs_check_interval_ms=1750\r\n"
-        "start_with_windows=TrUe\r\n");
+        "start_with_windows=TrUe\r\n"
+        "tab_provider=WindowTabs\r\n"
+        "tab_strip_alignment=right\r\n"
+        "tab_strip_width_percent=75\r\n"
+        "tab_width_px=220\r\n");
     const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
     Expect(result.file_found && result.read_succeeded,
            "a valid configuration should load successfully");
@@ -164,8 +176,91 @@ void TestValidConfigurationLoadsScanInterval() {
            "the configured WindowTabs check interval should be applied");
     Expect(result.config.start_with_windows,
            "a case-insensitive true value should enable login startup");
+    Expect(result.config.tab_provider == ctm::TabProvider::WindowTabs,
+           "a case-insensitive WindowTabs provider should load");
+    Expect(result.config.tab_strip_alignment ==
+               ctm::TabStripAlignment::Right &&
+               result.config.tab_strip_width_percent == 75 &&
+               result.config.tab_width_pixels == 220,
+           "valid built-in tab layout settings should load");
     Expect(result.warnings.empty(),
            "a valid configuration should not emit warnings");
+}
+
+void TestTabProviderSettingSavesAtomicallyAndPreservesV1Keys() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"provider.ini";
+    WriteTextFile(
+        path,
+        "; preserve provider comment\r\n"
+        "[ChromeTaskbarMerger]\r\n"
+        "scan_interval_ms=1250\r\n"
+        "windowtabs_check_interval_ms=1750\r\n"
+        "tab_provider=builtin\r\n"
+        "tab_provider=builtin\r\n"
+        "start_with_windows=true\r\n"
+        "[OtherSection]\r\nkeep=value\r\n");
+
+    const ctm::AppConfigSaveResult save =
+        ctm::SaveTabProviderSetting(path, ctm::TabProvider::WindowTabs);
+    const ctm::AppConfigLoadResult loaded = ctm::LoadAppConfig(path);
+    Expect(save.succeeded && loaded.read_succeeded &&
+               loaded.config.tab_provider == ctm::TabProvider::WindowTabs,
+           "the selected tab provider should survive an atomic reload");
+    Expect(loaded.config.start_with_windows &&
+               loaded.config.scan_interval ==
+                   std::chrono::milliseconds(1250) &&
+               loaded.config.windowtabs_check_interval ==
+                   std::chrono::milliseconds(1750),
+           "saving the provider should preserve V1-compatible settings");
+    const std::string text = ReadTextFile(path);
+    Expect(CountOccurrences(text, "tab_provider=") == 1 &&
+               text.find("; preserve provider comment") !=
+                   std::string::npos &&
+               text.find("keep=value") != std::string::npos,
+           "saving the provider should remove duplicates and preserve unrelated text");
+}
+
+void TestInvalidV2SettingsFallBackWithoutDiscardingValidValues() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"invalid-v2.ini";
+    WriteTextFile(
+        path,
+        "[ChromeTaskbarMerger]\n"
+        "tab_provider=unknown\n"
+        "tab_strip_alignment=middle\n"
+        "tab_strip_width_percent=24\n"
+        "tab_width_px=401\n"
+        "scan_interval_ms=1500\n");
+    const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
+    Expect(result.config.tab_provider == ctm::TabProvider::BuiltIn &&
+               result.config.tab_strip_alignment ==
+                   ctm::TabStripAlignment::Center &&
+               result.config.tab_strip_width_percent == 60 &&
+               result.config.tab_width_pixels == 180,
+           "invalid V2 settings should retain their safe defaults");
+    Expect(result.config.scan_interval == std::chrono::milliseconds(1500),
+           "an invalid V2 setting must not discard an unrelated valid setting");
+    Expect(result.warnings.size() == 4,
+           "each invalid V2 setting should emit one precise warning");
+}
+
+void TestTabProviderSaveFailureLeavesNoAmbiguousSuccess() {
+    const ctm::AppConfigSaveResult failed =
+        ctm::SaveTabProviderSetting({}, ctm::TabProvider::WindowTabs);
+    Expect(!failed.succeeded && !failed.error_message.empty(),
+           "an unavailable provider configuration path should fail closed");
+    Expect(ctm::TabProviderConfigValue(ctm::TabProvider::BuiltIn) ==
+               "builtin" &&
+               ctm::TabProviderConfigValue(ctm::TabProvider::WindowTabs) ==
+                   "windowtabs",
+           "provider persistence should use stable documented values");
 }
 
 void TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration() {
@@ -347,6 +442,40 @@ void TestRecoveryJournalSavesAtomicallyAndClears() {
            "an empty journal should clear all recovery obligations");
 }
 
+void TestStartupTaskbarRecoveryIsSafeAndIdempotent() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path =
+        directory.path() / L"startup-recovery.tsv";
+    ctm::RecoveryJournal journal(path);
+    const std::vector states = {
+        MakeRecoveryState(0x1234, 100, 1000),
+    };
+    std::wstring error;
+    Expect(journal.Save(states, &error),
+           "a stale V1 recovery obligation should persist for startup testing");
+
+    const ctm::StartupTaskbarRecoveryResult restored =
+        ctm::RestorePreviousTaskbarSession(nullptr, path);
+    const ctm::RecoveryLoadResult cleared = journal.Load();
+    Expect(restored.succeeded && restored.recovery_attempted &&
+               cleared.succeeded && cleared.states.empty(),
+           "startup should safely skip a stale HWND and clear its V1 recovery obligation");
+
+    const ctm::StartupTaskbarRecoveryResult repeated =
+        ctm::RestorePreviousTaskbarSession(nullptr, path);
+    Expect(repeated.succeeded && !repeated.recovery_attempted,
+           "repeating startup V1 recovery after cleanup should be a no-op");
+
+    WriteTextFile(path, "not-a-v1-recovery-journal\n");
+    const ctm::StartupTaskbarRecoveryResult invalid =
+        ctm::RestorePreviousTaskbarSession(nullptr, path);
+    Expect(!invalid.succeeded && !invalid.error_message.empty(),
+           "an invalid V1 startup journal should fail closed with an explanation");
+}
+
 void TestSingleInstanceMutexDistinguishesPrimaryAndExisting() {
     const std::wstring name =
         L"Local\\ChromeTaskbarMerger.Test." +
@@ -449,11 +578,15 @@ int main() {
     TestValidConfigurationLoadsScanInterval();
     TestInvalidConfigurationFallsBackSafely();
     TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration();
+    TestTabProviderSettingSavesAtomicallyAndPreservesV1Keys();
+    TestInvalidV2SettingsFallBackWithoutDiscardingValidValues();
+    TestTabProviderSaveFailureLeavesNoAmbiguousSuccess();
     TestSavingCreatesAMissingPortableConfiguration();
     TestInvalidStartWithWindowsValueFailsClosed();
     TestRecoverySerializationRoundTrip();
     TestCorruptRecoveryDataIsRejectedAsAWhole();
     TestRecoveryJournalSavesAtomicallyAndClears();
+    TestStartupTaskbarRecoveryIsSafeAndIdempotent();
     TestSingleInstanceMutexDistinguishesPrimaryAndExisting();
     TestCurrentProcessCreationTimeIsAvailable();
     TestTrayInstanceCommandsCanBeSentSynchronouslyAndAsynchronously();

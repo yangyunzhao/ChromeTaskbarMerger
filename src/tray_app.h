@@ -37,6 +37,7 @@ inline constexpr UINT kExternalCommandMessage = WM_APP + 11;
     Logger* logger,
     const AppConfig& config,
     const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path,
     const std::filesystem::path& configuration_path,
     const std::filesystem::path& executable_path,
     bool launched_at_login);

@@ -20,6 +20,7 @@ enum class ChromeWindowEventKind : LPARAM {
     MinimizeStarted,
     MinimizeEnded,
     LocationChanged,
+    MoveSizeEnded,
 };
 
 struct ChromeWindowEvent {

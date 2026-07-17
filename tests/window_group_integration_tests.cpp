@@ -49,6 +49,20 @@ void Expect(const bool condition, const std::string_view description) {
     return false;
 }
 
+[[nodiscard]] bool CurrentProcessOwnsWindowOfClass(
+    const wchar_t* const class_name) noexcept {
+    HWND window = nullptr;
+    while ((window = FindWindowExW(
+                nullptr, window, class_name, nullptr)) != nullptr) {
+        DWORD process_id = 0;
+        static_cast<void>(GetWindowThreadProcessId(window, &process_id));
+        if (process_id == GetCurrentProcessId()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 LRESULT CALLBACK TestWindowProcedure(const HWND window,
                                      const UINT message,
                                      const WPARAM wparam,
@@ -277,6 +291,41 @@ void TestGeometryPolicy() {
                snapped.content_bounds.top ==
                    work_area.top + ctm::kV2TabStripHeight,
            "a snapped content rectangle should leave visible room for the external strip");
+
+    const ctm::WindowGroupGeometry boundary_group =
+        ctm::CalculateWindowGroupGeometry(
+            {.left = -1920,
+             .top = 0,
+             .right = 0,
+             .bottom = 1040},
+            ctm::kV2TabStripHeight);
+    const RECT vertically_displaced_driver = {
+        .left = -1920,
+        .top = 78,
+        .right = 0,
+        .bottom = 1080,
+    };
+    const ctm::WindowGroupGeometry clamped_to_same_boundary =
+        ctm::CalculateWindowGroupGeometryFromContentBounds(
+            vertically_displaced_driver,
+            work_area,
+            ctm::kV2TabStripHeight);
+    Expect(
+        boundary_group.valid && clamped_to_same_boundary.valid &&
+            RectanglesEqual(
+                boundary_group.group_bounds,
+                clamped_to_same_boundary.group_bounds) &&
+            ctm::WindowGroupArrangementRequired(
+                boundary_group,
+                clamped_to_same_boundary,
+                vertically_displaced_driver),
+        "a vertically dragged member must be corrected even when work-area clamping leaves the group rectangle unchanged");
+    Expect(
+        !ctm::WindowGroupArrangementRequired(
+            boundary_group,
+            clamped_to_same_boundary,
+            clamped_to_same_boundary.content_bounds),
+        "an already aligned driver should not cause a geometry feedback loop at the work-area boundary");
 
     Expect(ctm::ScalePixelsForDpi(38, 96) == 38 &&
                ctm::ScalePixelsForDpi(38, 120) == 48 &&
@@ -606,9 +655,9 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
         strip.Destroy();
     }
 
-    Expect(FindWindowW(kTestWindowClass, nullptr) == nullptr,
+    Expect(!CurrentProcessOwnsWindowOfClass(kTestWindowClass),
            "the integration test should leave no synthetic group windows");
-    Expect(FindWindowW(kTabStripWindowClass, nullptr) == nullptr,
+    Expect(!CurrentProcessOwnsWindowOfClass(kTabStripWindowClass),
            "the integration test should leave no native tab-strip window");
 }
 

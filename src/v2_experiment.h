@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_config.h"
 #include "logger.h"
 
 #include <Windows.h>
@@ -13,5 +14,14 @@ namespace ctm {
     Logger* logger,
     const std::filesystem::path& recovery_journal_path,
     const std::filesystem::path& group_recovery_journal_path);
+
+[[nodiscard]] int RunBuiltInTrayApplication(
+    HINSTANCE instance,
+    Logger* logger,
+    const AppConfig& config,
+    const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path,
+    const std::filesystem::path& configuration_path,
+    const std::filesystem::path& executable_path);
 
 }  // namespace ctm

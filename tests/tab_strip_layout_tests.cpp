@@ -127,6 +127,33 @@ void TestDpiScaledLayout() {
     }
 }
 
+void TestConfiguredTabWidthAndStripAlignment() {
+    const ctm::TabStripLayout configured = ctm::CalculateTabStripLayout(
+        {.cx = 900, .cy = 38}, 3, 96, 180);
+    Expect(configured.items.size() == 3 &&
+               configured.items[0].bounds.right -
+                       configured.items[0].bounds.left <=
+                   180,
+           "the configured logical tab width should cap each tab");
+
+    constexpr RECT group{100, 50, 1100, 750};
+    const RECT left = ctm::CalculateConfiguredTabStripBounds(
+        group, 38, ctm::TabStripAlignment::Left, 60);
+    const RECT center = ctm::CalculateConfiguredTabStripBounds(
+        group, 38, ctm::TabStripAlignment::Center, 60);
+    const RECT right = ctm::CalculateConfiguredTabStripBounds(
+        group, 38, ctm::TabStripAlignment::Right, 60);
+    Expect(left.left == 100 && left.right == 700,
+           "left alignment should anchor the configured width to the group left");
+    Expect(center.left == 300 && center.right == 900,
+           "center alignment should distribute unused width equally");
+    Expect(right.left == 500 && right.right == 1100,
+           "right alignment should anchor the configured width to the group right");
+    Expect(left.top == 50 && left.bottom == 88 &&
+               center.top == left.top && right.bottom == left.bottom,
+           "alignment should not change the configured strip height");
+}
+
 }  // namespace
 
 int main() {
@@ -135,6 +162,7 @@ int main() {
     TestFiveNarrowTabsRemainHittable();
     TestInvalidAndOutsideGeometryIsRejected();
     TestDpiScaledLayout();
+    TestConfiguredTabWidthAndStripAlignment();
 
     if (failures != 0) {
         std::cerr << failures << " tab-strip layout test(s) failed.\n";

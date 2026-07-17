@@ -167,6 +167,10 @@ void TestNativeEventTranslationFiltersChildNoise() {
                EVENT_OBJECT_LOCATIONCHANGE, OBJID_WINDOW, CHILDID_SELF) ==
                ctm::ChromeWindowEventKind::LocationChanged,
            "top-level location changes should reach geometry synchronization");
+    Expect(ctm::TranslateWinEvent(
+               EVENT_SYSTEM_MOVESIZEEND, OBJID_CLIENT, 7) ==
+               ctm::ChromeWindowEventKind::MoveSizeEnded,
+           "move-size end should force a final geometry synchronization regardless of object identifiers");
 }
 
 void TestGeometryScheduleCoalescesAtInteractiveCadence() {
@@ -204,6 +208,16 @@ void TestGeometryScheduleCoalescesAtInteractiveCadence() {
                schedule.minimize_started_hint() == nullptr &&
                schedule.minimize_ended_hint() == nullptr,
            "successful geometry synchronization should clear the batch");
+
+    schedule.RecordEvent(
+        {.kind = ctm::ChromeWindowEventKind::MoveSizeEnded,
+         .hwnd = TestHandle(32)},
+        AtMilliseconds(200));
+    Expect(schedule.pending_event_count() == 1 &&
+               schedule.location_hint() == TestHandle(32) &&
+               !schedule.IsDue(AtMilliseconds(215)) &&
+               schedule.IsDue(AtMilliseconds(216)),
+           "move-size end should retain the exact driver and schedule a final debounced correction");
 }
 
 void TestMessageEncodingIsLossless() {

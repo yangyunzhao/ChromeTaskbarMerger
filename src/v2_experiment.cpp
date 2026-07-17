@@ -1,16 +1,22 @@
 #include "v2_experiment.h"
 
+#include "auto_start.h"
+#include "app_paths.h"
 #include "chrome_window.h"
 #include "chrome_window_registry.h"
+#include "ctm/version.h"
 #include "fixed_entry_manager.h"
 #include "group_recovery_journal.h"
 #include "lifecycle_sync.h"
+#include "management_state.h"
 #include "recovery_journal.h"
 #include "restore_command.h"
 #include "tab_activation.h"
 #include "tab_group_model.h"
+#include "tab_name_store.h"
 #include "tab_strip_window.h"
 #include "taskbar_controller.h"
+#include "tray_app.h"
 #include "v2_taskbar_readiness.h"
 #include "window_coordinator.h"
 #include "window_identity_query.h"
@@ -18,6 +24,9 @@
 #include "win_event_monitor.h"
 
 #include <Windows.h>
+#include <CommCtrl.h>
+#include <shellapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <array>
@@ -28,6 +37,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -402,6 +412,12 @@ void PrintCommands(Logger* const logger,
     WriteLine(logger, output.str());
 }
 
+enum class V2ManagedPumpResult {
+    Active,
+    SafelyStopped,
+    RecoveryRequired,
+};
+
 class V2ExperimentSession final : public ITabStripEventSink {
 public:
     V2ExperimentSession(
@@ -409,9 +425,13 @@ public:
         Logger* const logger,
         std::filesystem::path v1_recovery_path,
         std::filesystem::path group_recovery_path,
-        std::vector<ChromeWindowSnapshot> windows)
+        std::vector<ChromeWindowSnapshot> windows,
+        AppConfig config = {},
+        std::vector<TabNameRule> tab_name_rules = {})
         : instance_(instance),
           logger_(logger),
+          config_(config),
+          tab_name_rules_(std::move(tab_name_rules)),
           windows_(std::move(windows)),
           v1_recovery_journal_(std::move(v1_recovery_path)),
           group_recovery_journal_(std::move(group_recovery_path)),
@@ -525,16 +545,19 @@ public:
         identities_.reserve(windows_.size());
         candidates.reserve(windows_.size());
         strip_items.reserve(windows_.size());
-        for (const ChromeWindowSnapshot& snapshot : windows_) {
+        const std::vector<std::wstring> display_names =
+            ResolveTabDisplayNames(tab_name_rules_, windows_);
+        for (std::size_t index = 0; index < windows_.size(); ++index) {
+            const ChromeWindowSnapshot& snapshot = windows_[index];
             const WindowIdentity identity = MakeIdentity(snapshot);
             identities_.push_back(identity);
             candidates.push_back({
                 .identity = identity,
-                .title = snapshot.title,
+                .title = display_names[index],
             });
             strip_items.push_back({
                 .identity = identity,
-                .title = snapshot.title,
+                .title = display_names[index],
             });
         }
         active_identity_ = *registry_.active_identity();
@@ -574,6 +597,7 @@ public:
         }
         geometry_ = CalculateWindowGroupGeometry(
             anchor, TabStripHeightForWindow(active_identity_.hwnd));
+        ApplyConfiguredTabStrip(&geometry_);
         if (!geometry_.valid) {
             WriteLine(
                 logger_,
@@ -583,6 +607,7 @@ public:
         }
 
         DWORD strip_error = ERROR_SUCCESS;
+        tab_strip_.SetMaximumTabWidth(config_.tab_width_pixels);
         if (!tab_strip_.Create(
                 instance_,
                 active_identity_.hwnd,
@@ -760,28 +785,7 @@ public:
                             L"The Phase 4 UI message loop received WM_QUIT.";
                         break;
                     }
-                    if (message.hwnd == nullptr &&
-                        message.message == kV2LifecycleEventMessage) {
-                        const ChromeWindowEvent event =
-                            ChromeWinEventMonitor::DecodeMessage(
-                                message.wParam, message.lParam);
-                        if (RegistryContainsHandle(event.hwnd) &&
-                            (event.kind ==
-                                 ChromeWindowEventKind::LocationChanged ||
-                             event.kind ==
-                                 ChromeWindowEventKind::MinimizeStarted ||
-                             event.kind ==
-                                 ChromeWindowEventKind::MinimizeEnded)) {
-                            geometry_schedule_.RecordEvent(
-                                event,
-                                GeometrySyncSchedule::Clock::now());
-                            continue;
-                        }
-                        if (ShouldRecordLifecycleEvent(event)) {
-                            lifecycle_schedule_.RecordEvent(
-                                event,
-                                LifecycleSyncSchedule::Clock::now());
-                        }
+                    if (ProcessThreadMessage(message)) {
                         continue;
                     }
                     TranslateMessage(&message);
@@ -816,6 +820,100 @@ public:
             }
         }
         return exit_code_;
+    }
+
+    [[nodiscard]] bool ProcessThreadMessage(
+        const MSG& message) {
+        if (message.hwnd != nullptr ||
+            message.message != kV2LifecycleEventMessage) {
+            return false;
+        }
+        const ChromeWindowEvent event =
+            ChromeWinEventMonitor::DecodeMessage(
+                message.wParam, message.lParam);
+        if (RegistryContainsHandle(event.hwnd) &&
+            (event.kind == ChromeWindowEventKind::LocationChanged ||
+             event.kind == ChromeWindowEventKind::MoveSizeEnded ||
+             event.kind == ChromeWindowEventKind::MinimizeStarted ||
+             event.kind == ChromeWindowEventKind::MinimizeEnded)) {
+            geometry_schedule_.RecordEvent(
+                event, GeometrySyncSchedule::Clock::now());
+            return true;
+        }
+        if (ShouldRecordLifecycleEvent(event)) {
+            lifecycle_schedule_.RecordEvent(
+                event, LifecycleSyncSchedule::Clock::now());
+        }
+        return true;
+    }
+
+    [[nodiscard]] V2ManagedPumpResult PumpManagedWork() {
+        if (fatal_error_.empty() && managing_) {
+            const auto now = LifecycleSyncSchedule::Clock::now();
+            const LifecycleSyncReason reason =
+                lifecycle_schedule_.DueReason(now);
+            if (reason != LifecycleSyncReason::None &&
+                SynchronizeLifecycle(reason)) {
+                lifecycle_schedule_.MarkSynchronized(now);
+            }
+        }
+        if (fatal_error_.empty() && managing_) {
+            const auto now = GeometrySyncSchedule::Clock::now();
+            if (geometry_schedule_.IsDue(now) &&
+                SynchronizeGroupGeometry()) {
+                geometry_schedule_.MarkSynchronized();
+            }
+        }
+        if (fatal_error_.empty()) {
+            return V2ManagedPumpResult::Active;
+        }
+
+        last_runtime_error_ = fatal_error_;
+        WriteLine(logger_, fatal_error_, true);
+        fatal_error_.clear();
+        const bool restored = RestoreSession(
+            L"Managed tray failure rollback");
+        return restored ? V2ManagedPumpResult::SafelyStopped
+                        : V2ManagedPumpResult::RecoveryRequired;
+    }
+
+    [[nodiscard]] bool PauseManaged(
+        const std::wstring_view label) {
+        return RestoreSession(label);
+    }
+
+    [[nodiscard]] bool RetryManagedRecovery(
+        const std::wstring_view label) {
+        return RestoreSession(label);
+    }
+
+    [[nodiscard]] bool RequestImmediateSynchronization() {
+        if (!managing_) {
+            return false;
+        }
+        const auto now = LifecycleSyncSchedule::Clock::now();
+        const bool synchronized =
+            SynchronizeLifecycle(LifecycleSyncReason::FallbackScan);
+        if (synchronized) {
+            lifecycle_schedule_.MarkSynchronized(now);
+        }
+        return synchronized;
+    }
+
+    [[nodiscard]] bool managing() const noexcept {
+        return managing_;
+    }
+
+    [[nodiscard]] bool recovery_required() const noexcept {
+        return recovery_required_;
+    }
+
+    [[nodiscard]] std::size_t window_count() const noexcept {
+        return registry_.windows().size();
+    }
+
+    [[nodiscard]] const std::wstring& last_runtime_error() const noexcept {
+        return last_runtime_error_;
     }
 
     void OnTabActivationRequested(
@@ -918,11 +1016,30 @@ private:
         return true;
     }
 
+    void ApplyConfiguredTabStrip(
+        WindowGroupGeometry* const geometry) const noexcept {
+        if (geometry == nullptr || !geometry->valid) {
+            return;
+        }
+        const int height = geometry->tab_strip_bounds.bottom -
+                           geometry->tab_strip_bounds.top;
+        const RECT configured = CalculateConfiguredTabStripBounds(
+            geometry->group_bounds,
+            height,
+            config_.tab_strip_alignment,
+            config_.tab_strip_width_percent);
+        if (configured.right > configured.left &&
+            configured.bottom > configured.top) {
+            geometry->tab_strip_bounds = configured;
+        }
+    }
+
     [[nodiscard]] bool ApplyGroupGeometry(
-        const WindowGroupGeometry& geometry,
+        WindowGroupGeometry geometry,
         const WindowIdentity& active_identity,
         const std::wstring_view reason,
         const bool require_native_normal = false) {
+        ApplyConfiguredTabStrip(&geometry);
         if (!geometry.valid) {
             fatal_error_ = L"Phase 4 calculated an invalid group geometry.";
             return false;
@@ -1133,8 +1250,25 @@ private:
                 L"The moved Chrome rectangle cannot form a safe Phase 4 group.";
             return false;
         }
-        if (RectanglesEqual(moved.group_bounds, geometry_.group_bounds)) {
+        if (!WindowGroupArrangementRequired(
+                geometry_, moved, driver_bounds)) {
             return true;
+        }
+        if (RectanglesEqual(moved.group_bounds, geometry_.group_bounds) &&
+            !RectanglesEqual(moved.content_bounds, driver_bounds)) {
+            WriteLine(
+                logger_,
+                L"GROUP_GEOMETRY_CORRECTION driver=" +
+                    FormatIdentity(*driver) +
+                    L" actual=[" + std::to_wstring(driver_bounds.left) +
+                    L"," + std::to_wstring(driver_bounds.top) + L"," +
+                    std::to_wstring(driver_bounds.right) + L"," +
+                    std::to_wstring(driver_bounds.bottom) +
+                    L"] target=[" +
+                    std::to_wstring(moved.content_bounds.left) + L"," +
+                    std::to_wstring(moved.content_bounds.top) + L"," +
+                    std::to_wstring(moved.content_bounds.right) + L"," +
+                    std::to_wstring(moved.content_bounds.bottom) + L"]");
         }
         return ApplyGroupGeometry(moved, *driver, L"move-or-resize");
     }
@@ -1221,6 +1355,7 @@ private:
             case ChromeWindowEventKind::MinimizeStarted:
             case ChromeWindowEventKind::MinimizeEnded:
             case ChromeWindowEventKind::LocationChanged:
+            case ChromeWindowEventKind::MoveSizeEnded:
                 return false;
         }
         return false;
@@ -1241,10 +1376,17 @@ private:
     MakeRegistryCandidates() const {
         std::vector<TabGroupCandidate> candidates;
         candidates.reserve(registry_.windows().size());
-        for (const ChromeWindowSnapshot& snapshot : registry_.windows()) {
+        const std::vector<std::wstring> display_names =
+            ResolveTabDisplayNames(
+                tab_name_rules_, registry_.windows());
+        for (std::size_t index = 0;
+             index < registry_.windows().size();
+             ++index) {
+            const ChromeWindowSnapshot& snapshot =
+                registry_.windows()[index];
             candidates.push_back({
                 .identity = MakeIdentity(snapshot),
-                .title = snapshot.title,
+                .title = display_names[index],
             });
         }
         return candidates;
@@ -1253,10 +1395,17 @@ private:
     [[nodiscard]] std::vector<TabStripItem> MakeRegistryStripItems() const {
         std::vector<TabStripItem> items;
         items.reserve(registry_.windows().size());
-        for (const ChromeWindowSnapshot& snapshot : registry_.windows()) {
+        const std::vector<std::wstring> display_names =
+            ResolveTabDisplayNames(
+                tab_name_rules_, registry_.windows());
+        for (std::size_t index = 0;
+             index < registry_.windows().size();
+             ++index) {
+            const ChromeWindowSnapshot& snapshot =
+                registry_.windows()[index];
             items.push_back({
                 .identity = MakeIdentity(snapshot),
-                .title = snapshot.title,
+                .title = display_names[index],
             });
         }
         return items;
@@ -1332,6 +1481,7 @@ private:
         geometry_ =
             CalculateWindowGroupGeometry(
                 anchor, TabStripHeightForWindow(active_identity.hwnd));
+        ApplyConfiguredTabStrip(&geometry_);
         if (!geometry_.valid) {
             fatal_error_ =
                 L"The current Chrome rectangle is too small for the V2 tab strip.";
@@ -1887,6 +2037,8 @@ private:
 
     HINSTANCE instance_ = nullptr;
     Logger* logger_ = nullptr;
+    AppConfig config_;
+    std::vector<TabNameRule> tab_name_rules_;
     std::vector<ChromeWindowSnapshot> windows_;
     std::vector<WindowIdentity> identities_;
     RecoveryJournal v1_recovery_journal_;
@@ -1920,6 +2072,993 @@ private:
     int exit_code_ = 0;
     std::optional<WindowIdentity> transient_wait_identity_;
     std::wstring fatal_error_;
+    std::wstring last_runtime_error_;
+};
+
+constexpr UINT kV2TrayCallbackMessage = WM_APP + 20;
+constexpr UINT_PTR kV2TrayTimerId = 20;
+constexpr UINT kV2TrayIconId = 1;
+constexpr int kV2ApplicationIconResourceId = 101;
+constexpr UINT kV2MenuStatus = 200;
+constexpr UINT kV2MenuScanNow = 201;
+constexpr UINT kV2MenuPause = 202;
+constexpr UINT kV2MenuResume = 203;
+constexpr UINT kV2MenuRestoreAll = 204;
+constexpr UINT kV2MenuStartWithWindows = 205;
+constexpr UINT kV2MenuOpenLogs = 206;
+constexpr UINT kV2MenuAbout = 207;
+constexpr UINT kV2MenuExit = 208;
+constexpr UINT kV2MenuProviderBuiltIn = 209;
+constexpr UINT kV2MenuProviderWindowTabs = 210;
+constexpr UINT kV2ManagedTimerMilliseconds = 16;
+constexpr UINT kV2IdleTimerMilliseconds = 500;
+constexpr wchar_t kV2ProjectUrl[] =
+    L"https://github.com/yangyunzhao/ChromeTaskbarMerger";
+
+class BuiltInTrayApplication final {
+public:
+    BuiltInTrayApplication(
+        const HINSTANCE instance,
+        Logger* const logger,
+        const AppConfig& config,
+        std::filesystem::path v1_recovery_path,
+        std::filesystem::path group_recovery_path,
+        std::filesystem::path configuration_path,
+        std::filesystem::path executable_path)
+        : instance_(instance),
+          logger_(logger),
+          config_(config),
+          configured_provider_(config.tab_provider),
+          v1_recovery_path_(std::move(v1_recovery_path)),
+          group_recovery_path_(std::move(group_recovery_path)),
+          configuration_path_(std::move(configuration_path)),
+          executable_path_(std::move(executable_path)),
+          state_(TabProvider::BuiltIn) {}
+
+    BuiltInTrayApplication(const BuiltInTrayApplication&) = delete;
+    BuiltInTrayApplication& operator=(const BuiltInTrayApplication&) = delete;
+
+    [[nodiscard]] int Run() {
+        if (!CreateHiddenWindow() || !AddTrayIcon()) {
+            CleanupShell();
+            return 4;
+        }
+        SynchronizeAutoStartRegistration();
+        InitializeManagement();
+        UpdateTimer();
+
+        MSG message{};
+        int exit_code = 0;
+        while (true) {
+            const BOOL received = GetMessageW(&message, nullptr, 0, 0);
+            if (received == 0) {
+                break;
+            }
+            if (received == -1) {
+                LogError(
+                    L"The built-in tray message loop failed with Win32 error " +
+                    std::to_wstring(GetLastError()) + L'.');
+                exit_code = 6;
+                break;
+            }
+            if (session_ != nullptr &&
+                session_->ProcessThreadMessage(message)) {
+                continue;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+
+        if (session_ != nullptr &&
+            !session_->PauseManaged(L"Built-in tray message-loop exit")) {
+            exit_code = 5;
+        }
+        session_.reset();
+        CleanupShell();
+        return exit_code;
+    }
+
+private:
+    [[nodiscard]] bool CreateHiddenWindow() {
+        large_icon_ = static_cast<HICON>(LoadImageW(
+            instance_,
+            MAKEINTRESOURCEW(kV2ApplicationIconResourceId),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+            LR_SHARED));
+        small_icon_ = static_cast<HICON>(LoadImageW(
+            instance_,
+            MAKEINTRESOURCEW(kV2ApplicationIconResourceId),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_SHARED));
+
+        WNDCLASSEXW window_class{};
+        window_class.cbSize = sizeof(window_class);
+        window_class.lpfnWndProc = &BuiltInTrayApplication::WindowProcedure;
+        window_class.hInstance = instance_;
+        window_class.hIcon = large_icon_ != nullptr
+                                 ? large_icon_
+                                 : LoadIconW(nullptr, IDI_APPLICATION);
+        window_class.hIconSm = small_icon_ != nullptr
+                                   ? small_icon_
+                                   : LoadIconW(nullptr, IDI_APPLICATION);
+        window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        window_class.lpszClassName = kTrayWindowClassName;
+        if (RegisterClassExW(&window_class) == 0) {
+            LogError(
+                L"Registering the built-in tray window failed with Win32 error " +
+                std::to_wstring(GetLastError()) + L'.');
+            return false;
+        }
+        class_registered_ = true;
+        taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
+        window_ = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            kTrayWindowClassName,
+            L"ChromeTaskbarMerger",
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            nullptr,
+            nullptr,
+            instance_,
+            this);
+        if (window_ == nullptr) {
+            LogError(
+                L"Creating the built-in tray window failed with Win32 error " +
+                std::to_wstring(GetLastError()) + L'.');
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool AddTrayIcon() {
+        if (window_ == nullptr) {
+            return false;
+        }
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = window_;
+        data.uID = kV2TrayIconId;
+        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+        data.uCallbackMessage = kV2TrayCallbackMessage;
+        data.hIcon = small_icon_ != nullptr
+                         ? small_icon_
+                         : LoadIconW(nullptr, IDI_APPLICATION);
+        const std::wstring tooltip = BuildTooltip();
+        wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
+        if (Shell_NotifyIconW(NIM_ADD, &data) == FALSE) {
+            LogError(L"Adding the built-in tray icon failed.");
+            return false;
+        }
+        data.uVersion = NOTIFYICON_VERSION_4;
+        static_cast<void>(Shell_NotifyIconW(NIM_SETVERSION, &data));
+        tray_icon_added_ = true;
+        return true;
+    }
+
+    void RemoveTrayIcon() noexcept {
+        if (!tray_icon_added_ || window_ == nullptr) {
+            return;
+        }
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = window_;
+        data.uID = kV2TrayIconId;
+        static_cast<void>(Shell_NotifyIconW(NIM_DELETE, &data));
+        tray_icon_added_ = false;
+    }
+
+    void CleanupShell() noexcept {
+        if (window_ != nullptr) {
+            KillTimer(window_, kV2TrayTimerId);
+        }
+        RemoveTrayIcon();
+        if (window_ != nullptr && IsWindow(window_) != FALSE) {
+            DestroyWindow(window_);
+        }
+        window_ = nullptr;
+        if (class_registered_) {
+            UnregisterClassW(kTrayWindowClassName, instance_);
+            class_registered_ = false;
+        }
+    }
+
+    void InitializeManagement() {
+        std::wstring tab_name_path_error;
+        const std::filesystem::path tab_name_path =
+            GetTabNameRulesPath(&tab_name_path_error);
+        if (tab_name_path.empty()) {
+            LogError(
+                L"Custom tab names are unavailable: " +
+                tab_name_path_error);
+        } else {
+            TabNameLoadResult names = LoadTabNameRules(tab_name_path);
+            if (!names.succeeded) {
+                LogError(
+                    L"The custom tab-name file was ignored because it is invalid: " +
+                    names.error_message);
+                ShowNotification(
+                    L"自定义标签名称未加载",
+                    L"名称规则文件无效，已安全使用 Chrome 原标题。",
+                    NIIF_WARNING);
+            } else {
+                tab_name_rules_ = std::move(names.rules);
+                LogInfo(
+                    L"Loaded " + std::to_wstring(tab_name_rules_.size()) +
+                    L" custom tab-name rule(s).");
+            }
+        }
+        const ProcessPresenceResult windowtabs =
+            QueryWindowTabsPresence();
+        const bool conflict = !windowtabs.query_succeeded ||
+                              windowtabs.running;
+        state_.CompleteInitialization(true, conflict);
+        if (conflict) {
+            LogError(
+                windowtabs.running
+                    ? L"Built-in tabs are paused because WindowTabs is running."
+                    : L"Built-in tabs are paused because WindowTabs presence could not be verified.");
+            ShowNotification(
+                L"标签管理器冲突",
+                windowtabs.running
+                    ? L"当前选择内置标签。请退出 WindowTabs 后自动重试。"
+                    : L"无法确认 WindowTabs 状态，内置管理已安全暂停。",
+                NIIF_WARNING);
+            return;
+        }
+        static_cast<void>(TryPrepareGroup());
+    }
+
+    [[nodiscard]] bool RecoveryJournalIsClear() const {
+        GroupRecoveryJournal journal(group_recovery_path_);
+        const GroupRecoveryLoadResult load = journal.Load();
+        return load.succeeded && !load.state.HasObligations();
+    }
+
+    [[nodiscard]] bool TryPrepareGroup() {
+        if (session_ != nullptr ||
+            (!state_.preparing() && !state_.managing())) {
+            return session_ != nullptr;
+        }
+
+        const ProcessPresenceResult windowtabs =
+            QueryWindowTabsPresence();
+        if (!windowtabs.query_succeeded || windowtabs.running) {
+            state_.ConflictDetected(true);
+            UpdateStatus();
+            return false;
+        }
+
+        ManageableScan scan = ScanManageableChromeWindows(logger_);
+        if (!scan.succeeded) {
+            if (state_.preparing()) {
+                state_.PreparationCompleted(false, true);
+            } else {
+                state_.OperationFailed(true);
+            }
+            LogError(L"Built-in tray Chrome enumeration failed.");
+            UpdateStatus();
+            return false;
+        }
+        last_window_count_ = scan.windows.size();
+        if (scan.windows.empty()) {
+            const bool was_preparing = state_.preparing();
+            if (was_preparing) {
+                state_.PreparationCompleted(true);
+                LogInfo(L"Built-in provider is ready; no Chrome windows are open.");
+                UpdateStatus();
+            }
+            return true;
+        }
+        if (scan.windows.size() > 5) {
+            if (state_.preparing()) {
+                state_.PreparationCompleted(false, true);
+            } else {
+                state_.OperationFailed(true);
+            }
+            LogError(L"Built-in Phase 5 currently supports at most five Chrome windows.");
+            ShowNotification(
+                L"窗口数量超出当前范围",
+                L"Phase 5 最多管理 5 个 Chrome 窗口，任务栏保持可见。",
+                NIIF_WARNING);
+            UpdateStatus();
+            return false;
+        }
+        const auto non_normal = std::find_if(
+            scan.windows.begin(),
+            scan.windows.end(),
+            [](const ChromeWindowSnapshot& snapshot) {
+                return WindowShowState(snapshot.hwnd) != L"normal";
+            });
+        if (non_normal != scan.windows.end()) {
+            if (state_.preparing()) {
+                state_.PreparationCompleted(false, true);
+            } else {
+                state_.OperationFailed(true);
+            }
+            LogError(
+                L"Built-in preparation requires every initial Chrome window to be normal.");
+            ShowNotification(
+                L"Chrome 窗口状态不适合建组",
+                L"请先还原所有最小化或最大化窗口，再选择“恢复管理”。",
+                NIIF_WARNING);
+            UpdateStatus();
+            return false;
+        }
+
+        auto candidate = std::make_unique<V2ExperimentSession>(
+            instance_,
+            logger_,
+            v1_recovery_path_,
+            group_recovery_path_,
+            std::move(scan.windows),
+            config_,
+            tab_name_rules_);
+        if (!candidate->Prepare()) {
+            candidate.reset();
+            const bool restored = RecoveryJournalIsClear();
+            if (state_.preparing()) {
+                state_.PreparationCompleted(false, restored);
+            } else {
+                state_.OperationFailed(restored);
+            }
+            LogError(L"Built-in tray group preparation failed.");
+            ShowNotification(
+                restored ? L"内置标签准备失败" : L"恢复未完成",
+                restored
+                    ? L"窗口已恢复，可从托盘重试。"
+                    : L"请使用“恢复全部”并查看日志。",
+                restored ? NIIF_WARNING : NIIF_ERROR);
+            UpdateStatus();
+            return false;
+        }
+        session_ = std::move(candidate);
+        last_window_count_ = session_->window_count();
+        if (state_.preparing()) {
+            state_.PreparationCompleted(true);
+        }
+        LogInfo(
+            L"Built-in Phase 5 tray management started with " +
+            std::to_wstring(last_window_count_) + L" Chrome window(s).");
+        ShowNotification(
+            L"内置标签管理已启动",
+            L"Chrome 已建立内置标签组，任务栏仅保留一个入口。",
+            NIIF_INFO);
+        UpdateStatus();
+        return true;
+    }
+
+    void HandleTimer() {
+        const ULONGLONG now = GetTickCount64();
+        if (now >= next_environment_check_) {
+            next_environment_check_ = now + kV2IdleTimerMilliseconds;
+            const ProcessPresenceResult windowtabs =
+                QueryWindowTabsPresence();
+            const bool conflict = !windowtabs.query_succeeded ||
+                                  windowtabs.running;
+            if (session_ != nullptr && conflict) {
+                const bool restored = session_->PauseManaged(
+                    L"WindowTabs conflict restoration");
+                if (restored) {
+                    session_.reset();
+                }
+                state_.ConflictDetected(restored);
+                ShowNotification(
+                    restored ? L"标签管理器冲突" : L"恢复未完成",
+                    restored
+                        ? L"检测到 WindowTabs，内置标签已解除并暂停。"
+                        : L"检测到 WindowTabs，但窗口恢复未完成。",
+                    restored ? NIIF_WARNING : NIIF_ERROR);
+                UpdateStatus();
+                return;
+            }
+            if (session_ == nullptr && state_.managing() && conflict) {
+                state_.ConflictDetected(true);
+                ShowNotification(
+                    L"标签管理器冲突",
+                    L"检测到 WindowTabs，内置模式已暂停等待冲突解除。",
+                    NIIF_WARNING);
+                UpdateStatus();
+                return;
+            }
+            if (session_ == nullptr && state_.paused_by_conflict() &&
+                !conflict && state_.ConflictCleared()) {
+                static_cast<void>(TryPrepareGroup());
+            } else if (session_ == nullptr && state_.managing() &&
+                       !conflict && now >= next_group_scan_) {
+                next_group_scan_ = now +
+                    static_cast<ULONGLONG>(config_.scan_interval.count());
+                static_cast<void>(TryPrepareGroup());
+            }
+        }
+
+        if (session_ == nullptr) {
+            return;
+        }
+        const std::size_t previous_count = last_window_count_;
+        const V2ManagedPumpResult pumped = session_->PumpManagedWork();
+        last_window_count_ = session_->window_count();
+        if (pumped == V2ManagedPumpResult::SafelyStopped) {
+            const std::wstring error = session_->last_runtime_error();
+            session_.reset();
+            state_.OperationFailed(true);
+            LogError(L"Built-in management paused after recovery: " + error);
+            ShowNotification(
+                L"内置管理异常暂停",
+                L"任务栏和窗口布局已恢复，可从托盘重试。",
+                NIIF_WARNING);
+        } else if (pumped == V2ManagedPumpResult::RecoveryRequired) {
+            state_.RequireRecovery();
+            ShowNotification(
+                L"需要恢复",
+                L"内置标签会话未能完全恢复，请使用“恢复全部”。",
+                NIIF_ERROR);
+        }
+        if (pumped != V2ManagedPumpResult::Active ||
+            previous_count != last_window_count_) {
+            UpdateStatus();
+        }
+    }
+
+    void PauseManagement() {
+        if (!state_.can_pause()) {
+            return;
+        }
+        bool restored = true;
+        if (session_ != nullptr) {
+            restored = session_->PauseManaged(L"Tray user pause");
+            if (restored) {
+                session_.reset();
+            }
+        }
+        state_.PauseByUser(restored);
+        ShowNotification(
+            restored ? L"管理已暂停" : L"暂停恢复未完成",
+            restored
+                ? L"任务栏和每个 Chrome 的原始位置已恢复。"
+                : L"请使用“恢复全部”并查看日志。",
+            restored ? NIIF_INFO : NIIF_ERROR);
+        UpdateStatus();
+    }
+
+    void ResumeManagement() {
+        if (state_.recovery_required()) {
+            ShowNotification(
+                L"需要先恢复",
+                L"请先使用“恢复全部”，再恢复管理。",
+                NIIF_WARNING);
+            return;
+        }
+        if (!state_.can_resume()) {
+            return;
+        }
+        const ProcessPresenceResult windowtabs =
+            QueryWindowTabsPresence();
+        const bool conflict = !windowtabs.query_succeeded ||
+                              windowtabs.running;
+        if (!state_.ResumeRequested(true, conflict)) {
+            return;
+        }
+        if (conflict) {
+            ShowNotification(
+                L"标签管理器冲突",
+                L"请退出 WindowTabs；内置模式随后会自动准备。",
+                NIIF_WARNING);
+            UpdateStatus();
+            return;
+        }
+        static_cast<void>(TryPrepareGroup());
+    }
+
+    [[nodiscard]] bool ForceRestoreAll() {
+        if (session_ != nullptr) {
+            bool restored = session_->PauseManaged(
+                L"Tray explicit restoration");
+            if (!restored) {
+                restored = session_->RetryManagedRecovery(
+                    L"Tray explicit restoration retry");
+            }
+            if (!restored) {
+                state_.RequireRecovery();
+                UpdateStatus();
+                return false;
+            }
+            session_.reset();
+        }
+        const bool succeeded = RunStandaloneRestoreAll(
+                                   logger_,
+                                   v1_recovery_path_,
+                                   group_recovery_path_) == 0;
+        state_.ExplicitRestoreCompleted(succeeded);
+        ShowNotification(
+            succeeded ? L"恢复完成" : L"恢复未完成",
+            succeeded
+                ? L"任务栏和窗口布局已恢复，管理保持暂停。"
+                : L"请保留恢复日志并重试。",
+            succeeded ? NIIF_INFO : NIIF_ERROR);
+        UpdateStatus();
+        return succeeded;
+    }
+
+    void ScanNow() {
+        if (session_ != nullptr) {
+            static_cast<void>(session_->RequestImmediateSynchronization());
+            return;
+        }
+        if (state_.managing() || state_.preparing()) {
+            static_cast<void>(TryPrepareGroup());
+            return;
+        }
+        const ManageableScan scan = ScanManageableChromeWindows(logger_);
+        if (scan.succeeded) {
+            last_window_count_ = scan.windows.size();
+            ShowNotification(
+                L"只读扫描完成",
+                L"管理仍保持暂停。",
+                NIIF_INFO);
+            UpdateStatus();
+        }
+    }
+
+    void SelectProvider(const TabProvider provider) {
+        if (configured_provider_ == provider) {
+            return;
+        }
+        if (state_.recovery_required()) {
+            ShowNotification(
+                L"需要先恢复",
+                L"请先使用“恢复全部”，再切换标签方式。",
+                NIIF_WARNING);
+            return;
+        }
+        if (session_ != nullptr || state_.can_pause()) {
+            PauseManagement();
+            if (state_.recovery_required()) {
+                return;
+            }
+        }
+        const AppConfigSaveResult saved =
+            SaveTabProviderSetting(configuration_path_, provider);
+        if (!saved.succeeded) {
+            LogError(L"Saving tab_provider failed: " + saved.error_message);
+            ShowNotification(
+                L"标签方式未保存",
+                L"无法原子更新配置，当前选择保持不变。",
+                NIIF_ERROR);
+            return;
+        }
+        configured_provider_ = provider;
+        LogInfo(
+            L"Tab provider saved as " +
+            std::wstring(TabProviderDisplayName(provider)) +
+            L"; restart is required.");
+        ShowNotification(
+            L"标签方式已保存",
+            L"完全退出并重新启动后切换为“" +
+                std::wstring(TabProviderDisplayName(provider)) + L"”。",
+            NIIF_INFO);
+        UpdateStatus();
+    }
+
+    void SynchronizeAutoStartRegistration() {
+        const AutoStartOperationResult result =
+            auto_start_registry_.SetEnabled(
+                config_.start_with_windows, executable_path_);
+        if (!result.succeeded) {
+            LogError(
+                L"Synchronizing Windows-login startup failed with Win32 error " +
+                std::to_wstring(result.error_code) + L'.');
+        }
+    }
+
+    void ToggleStartWithWindows() {
+        const bool previous = config_.start_with_windows;
+        const bool requested = !previous;
+        const AppConfigSaveResult saved =
+            SaveStartWithWindowsSetting(configuration_path_, requested);
+        if (!saved.succeeded) {
+            ShowNotification(
+                L"自动启动设置未保存",
+                L"无法写入配置，设置保持不变。",
+                NIIF_ERROR);
+            return;
+        }
+        const AutoStartOperationResult registry =
+            auto_start_registry_.SetEnabled(requested, executable_path_);
+        if (!registry.succeeded) {
+            const AppConfigSaveResult rollback =
+                SaveStartWithWindowsSetting(configuration_path_, previous);
+            LogError(
+                L"Updating login startup failed with Win32 error " +
+                std::to_wstring(registry.error_code) +
+                (rollback.succeeded
+                     ? L"; configuration rolled back."
+                     : L"; configuration rollback failed."));
+            ShowNotification(
+                L"自动启动设置未应用",
+                L"Windows 启动项更新失败，已尝试恢复配置。",
+                NIIF_ERROR);
+            return;
+        }
+        config_.start_with_windows = requested;
+        ShowNotification(
+            requested ? L"已启用自动启动" : L"已关闭自动启动",
+            requested ? L"下次登录 Windows 时将自动运行。"
+                      : L"下次登录 Windows 时不会自动运行。",
+            NIIF_INFO);
+    }
+
+    [[nodiscard]] std::wstring_view StateDisplayName() const noexcept {
+        switch (state_.state()) {
+            case ManagementState::Initializing:
+                return L"正在初始化";
+            case ManagementState::PreparingGroup:
+                return L"正在准备内置标签";
+            case ManagementState::WaitingForTabProvider:
+                return L"等待标签提供器";
+            case ManagementState::Managing:
+                return session_ == nullptr ? L"管理中（等待 Chrome）"
+                                           : L"管理中";
+            case ManagementState::PausedByUser:
+                return L"已暂停（用户）";
+            case ManagementState::PausedByConflict:
+                return L"已暂停（WindowTabs 冲突）";
+            case ManagementState::PausedByError:
+                return L"已暂停（异常）";
+            case ManagementState::RecoveryRequired:
+                return L"需要恢复";
+        }
+        return L"未知状态";
+    }
+
+    [[nodiscard]] std::wstring BuildTooltip() const {
+        return L"ChromeTaskbarMerger - " +
+               std::wstring(StateDisplayName()) + L" - 内置标签 (Chrome " +
+               std::to_wstring(last_window_count_) + L")";
+    }
+
+    void UpdateStatus() {
+        UpdateTimer();
+        if (!tray_icon_added_ || window_ == nullptr) {
+            return;
+        }
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = window_;
+        data.uID = kV2TrayIconId;
+        data.uFlags = NIF_TIP | NIF_SHOWTIP;
+        const std::wstring tooltip = BuildTooltip();
+        wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
+        static_cast<void>(Shell_NotifyIconW(NIM_MODIFY, &data));
+    }
+
+    void UpdateTimer() {
+        if (window_ == nullptr) {
+            return;
+        }
+        KillTimer(window_, kV2TrayTimerId);
+        const UINT interval = session_ != nullptr
+                                  ? kV2ManagedTimerMilliseconds
+                                  : kV2IdleTimerMilliseconds;
+        if (SetTimer(window_, kV2TrayTimerId, interval, nullptr) == 0) {
+            LogError(
+                L"Creating the built-in tray timer failed with Win32 error " +
+                std::to_wstring(GetLastError()) + L'.');
+            if (session_ != nullptr) {
+                const bool restored = session_->PauseManaged(
+                    L"Tray timer failure restoration");
+                if (restored) {
+                    session_.reset();
+                }
+                state_.OperationFailed(restored);
+            }
+        }
+    }
+
+    void ShowNotification(const std::wstring_view title,
+                          const std::wstring_view text,
+                          const DWORD flags) const {
+        if (!tray_icon_added_ || window_ == nullptr) {
+            return;
+        }
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = window_;
+        data.uID = kV2TrayIconId;
+        data.uFlags = NIF_INFO;
+        wcsncpy_s(data.szInfoTitle, std::wstring(title).c_str(), _TRUNCATE);
+        wcsncpy_s(data.szInfo, std::wstring(text).c_str(), _TRUNCATE);
+        data.dwInfoFlags = flags;
+        static_cast<void>(Shell_NotifyIconW(NIM_MODIFY, &data));
+    }
+
+    void ShowContextMenu(POINT point) {
+        HMENU menu = CreatePopupMenu();
+        HMENU provider_menu = CreatePopupMenu();
+        if (menu == nullptr || provider_menu == nullptr) {
+            if (provider_menu != nullptr) {
+                DestroyMenu(provider_menu);
+            }
+            if (menu != nullptr) {
+                DestroyMenu(menu);
+            }
+            return;
+        }
+        const std::wstring status =
+            L"状态：" + std::wstring(StateDisplayName());
+        AppendMenuW(
+            menu, MF_STRING | MF_DISABLED, kV2MenuStatus, status.c_str());
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kV2MenuScanNow, L"立即重新扫描");
+        AppendMenuW(
+            menu,
+            MF_STRING | (state_.can_pause() ? MF_ENABLED : MF_GRAYED),
+            kV2MenuPause,
+            L"暂停管理");
+        AppendMenuW(
+            menu,
+            MF_STRING | (state_.can_resume() ? MF_ENABLED : MF_GRAYED),
+            kV2MenuResume,
+            L"恢复管理");
+        AppendMenuW(
+            menu, MF_STRING, kV2MenuRestoreAll, L"恢复全部任务栏和窗口布局");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(
+            provider_menu,
+            MF_STRING |
+                (configured_provider_ == TabProvider::BuiltIn
+                     ? MF_CHECKED
+                     : MF_UNCHECKED),
+            kV2MenuProviderBuiltIn,
+            L"内置标签（默认）");
+        AppendMenuW(
+            provider_menu,
+            MF_STRING |
+                (configured_provider_ == TabProvider::WindowTabs
+                     ? MF_CHECKED
+                     : MF_UNCHECKED),
+            kV2MenuProviderWindowTabs,
+            L"WindowTabs 标签");
+        AppendMenuW(
+            menu,
+            MF_POPUP,
+            reinterpret_cast<UINT_PTR>(provider_menu),
+            L"标签提供方式（重启生效）");
+        AppendMenuW(
+            menu,
+            MF_STRING |
+                (config_.start_with_windows ? MF_CHECKED : MF_UNCHECKED),
+            kV2MenuStartWithWindows,
+            L"随 Windows 登录自动启动");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kV2MenuOpenLogs, L"打开日志目录");
+        AppendMenuW(menu, MF_STRING, kV2MenuAbout, L"关于 ChromeTaskbarMerger");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kV2MenuExit, L"退出");
+
+        SetForegroundWindow(window_);
+        const UINT command = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+            point.x,
+            point.y,
+            0,
+            window_,
+            nullptr);
+        DestroyMenu(menu);
+        PostMessageW(window_, WM_NULL, 0, 0);
+        HandleMenuCommand(command);
+    }
+
+    void HandleMenuCommand(const UINT command) {
+        switch (command) {
+            case kV2MenuScanNow:
+                ScanNow();
+                break;
+            case kV2MenuPause:
+                PauseManagement();
+                break;
+            case kV2MenuResume:
+                ResumeManagement();
+                break;
+            case kV2MenuRestoreAll:
+                static_cast<void>(ForceRestoreAll());
+                break;
+            case kV2MenuProviderBuiltIn:
+                SelectProvider(TabProvider::BuiltIn);
+                break;
+            case kV2MenuProviderWindowTabs:
+                SelectProvider(TabProvider::WindowTabs);
+                break;
+            case kV2MenuStartWithWindows:
+                ToggleStartWithWindows();
+                break;
+            case kV2MenuOpenLogs:
+                OpenLogDirectory();
+                break;
+            case kV2MenuAbout:
+                ShowAboutDialog();
+                break;
+            case kV2MenuExit:
+                RequestExit();
+                break;
+            default:
+                break;
+        }
+    }
+
+    void OpenLogDirectory() const {
+        if (logger_ == nullptr || logger_->log_directory().empty()) {
+            return;
+        }
+        const std::filesystem::path directory = logger_->log_directory();
+        static_cast<void>(ShellExecuteW(
+            window_, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    }
+
+    void ShowAboutDialog() const {
+        const std::wstring content =
+            L"ChromeTaskbarMerger " + std::wstring(kVersion) +
+            L"\n\nV2 内置标签与 Windows 任务栏 Chrome 单入口工具"
+            L"\n\n开发人员：杨云召"
+            L"\n\nGitHub：" + std::wstring(kV2ProjectUrl) +
+            L"\n\n许可证：MIT";
+        MessageBoxW(
+            window_,
+            content.c_str(),
+            L"关于 ChromeTaskbarMerger",
+            MB_OK | MB_ICONINFORMATION);
+    }
+
+    void RequestExit() {
+        if (session_ != nullptr) {
+            if (!session_->PauseManaged(L"Built-in tray normal exit")) {
+                state_.RequireRecovery();
+                ShowNotification(
+                    L"暂时无法退出",
+                    L"窗口恢复未完成，请先使用“恢复全部”。",
+                    NIIF_ERROR);
+                UpdateStatus();
+                return;
+            }
+            session_.reset();
+        }
+        RemoveTrayIcon();
+        DestroyWindow(window_);
+    }
+
+    void LogInfo(const std::wstring_view message) const {
+        if (logger_ != nullptr) {
+            logger_->Info(message);
+        }
+    }
+
+    void LogError(const std::wstring_view message) const {
+        if (logger_ != nullptr) {
+            logger_->Error(message);
+        }
+    }
+
+    LRESULT HandleMessage(const UINT message,
+                          const WPARAM wparam,
+                          const LPARAM lparam) {
+        if (message == taskbar_created_message_) {
+            tray_icon_added_ = false;
+            static_cast<void>(AddTrayIcon());
+            if (session_ != nullptr) {
+                static_cast<void>(
+                    session_->RequestImmediateSynchronization());
+            }
+            return 0;
+        }
+        switch (message) {
+            case WM_TIMER:
+                if (wparam == kV2TrayTimerId) {
+                    HandleTimer();
+                }
+                return 0;
+            case kExternalCommandMessage:
+                if (wparam == static_cast<WPARAM>(
+                                  ExistingInstanceCommand::RestoreAll)) {
+                    return ForceRestoreAll() ? 1 : 0;
+                }
+                if (wparam == static_cast<WPARAM>(
+                                  ExistingInstanceCommand::Rescan)) {
+                    ScanNow();
+                    return 1;
+                }
+                return 0;
+            case kV2TrayCallbackMessage: {
+                const UINT notification = LOWORD(lparam);
+                if (notification == WM_CONTEXTMENU ||
+                    notification == WM_RBUTTONUP ||
+                    notification == NIN_SELECT ||
+                    notification == NIN_KEYSELECT) {
+                    POINT point{GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)};
+                    if (notification != WM_CONTEXTMENU ||
+                        (point.x == -1 && point.y == -1)) {
+                        GetCursorPos(&point);
+                    }
+                    ShowContextMenu(point);
+                }
+                return 0;
+            }
+            case WM_CLOSE:
+                RequestExit();
+                return 0;
+            case WM_QUERYENDSESSION:
+                if (session_ == nullptr) {
+                    return TRUE;
+                }
+                if (!session_->PauseManaged(
+                        L"Windows session-end restoration")) {
+                    state_.RequireRecovery();
+                    return FALSE;
+                }
+                session_.reset();
+                state_.PauseByUser(true);
+                return TRUE;
+            case WM_DESTROY:
+                window_ = nullptr;
+                PostQuitMessage(0);
+                return 0;
+            default:
+                return DefWindowProcW(window_, message, wparam, lparam);
+        }
+    }
+
+    static LRESULT CALLBACK WindowProcedure(
+        const HWND window,
+        const UINT message,
+        const WPARAM wparam,
+        const LPARAM lparam) {
+        BuiltInTrayApplication* application = nullptr;
+        if (message == WM_NCCREATE) {
+            const auto* const create =
+                reinterpret_cast<const CREATESTRUCTW*>(lparam);
+            application = static_cast<BuiltInTrayApplication*>(
+                create->lpCreateParams);
+            application->window_ = window;
+            SetWindowLongPtrW(
+                window,
+                GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(application));
+        } else {
+            application = reinterpret_cast<BuiltInTrayApplication*>(
+                GetWindowLongPtrW(window, GWLP_USERDATA));
+        }
+        return application != nullptr
+                   ? application->HandleMessage(message, wparam, lparam)
+                   : DefWindowProcW(window, message, wparam, lparam);
+    }
+
+    HINSTANCE instance_ = nullptr;
+    Logger* logger_ = nullptr;
+    AppConfig config_;
+    TabProvider configured_provider_ = TabProvider::BuiltIn;
+    std::filesystem::path v1_recovery_path_;
+    std::filesystem::path group_recovery_path_;
+    std::filesystem::path configuration_path_;
+    std::filesystem::path executable_path_;
+    HWND window_ = nullptr;
+    UINT taskbar_created_message_ = 0;
+    HICON large_icon_ = nullptr;
+    HICON small_icon_ = nullptr;
+    bool class_registered_ = false;
+    bool tray_icon_added_ = false;
+    std::size_t last_window_count_ = 0;
+    ULONGLONG next_environment_check_ = 0;
+    ULONGLONG next_group_scan_ = 0;
+    AutoStartRegistry auto_start_registry_;
+    ManagementStateMachine state_;
+    std::vector<TabNameRule> tab_name_rules_;
+    std::unique_ptr<V2ExperimentSession> session_;
 };
 
 [[nodiscard]] int RunV2ExperimentImpl(
@@ -2069,6 +3208,39 @@ private:
 }
 
 }  // namespace
+
+int RunBuiltInTrayApplication(
+    const HINSTANCE instance,
+    Logger* const logger,
+    const AppConfig& config,
+    const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path,
+    const std::filesystem::path& configuration_path,
+    const std::filesystem::path& executable_path) {
+    try {
+        BuiltInTrayApplication application(
+            instance,
+            logger,
+            config,
+            recovery_journal_path,
+            group_recovery_journal_path,
+            configuration_path,
+            executable_path);
+        return application.Run();
+    } catch (const std::exception& exception) {
+        if (logger != nullptr) {
+            logger->Error(
+                std::string("Unhandled built-in tray exception: ") +
+                exception.what());
+        }
+        return 6;
+    } catch (...) {
+        if (logger != nullptr) {
+            logger->Error(L"Unhandled unknown built-in tray exception.");
+        }
+        return 6;
+    }
+}
 
 int RunV2Experiment(
     const HINSTANCE instance,

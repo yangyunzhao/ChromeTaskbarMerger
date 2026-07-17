@@ -355,7 +355,19 @@ void TabStripWindow::RecalculateLayout() noexcept {
     layout_ = CalculateTabStripLayout(
         {.cx = client.right - client.left,
          .cy = client.bottom - client.top},
-        items_.size(), dpi_);
+        items_.size(),
+        dpi_,
+        maximum_tab_width_pixels_);
+}
+
+void TabStripWindow::SetMaximumTabWidth(
+    const int logical_pixels) noexcept {
+    maximum_tab_width_pixels_ = std::clamp(
+        logical_pixels, kMinimumTabWidthPixels, kMaximumTabWidthPixels);
+    RecalculateLayout();
+    if (hwnd_ != nullptr) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void TabStripWindow::UpdateDpiResources() noexcept {

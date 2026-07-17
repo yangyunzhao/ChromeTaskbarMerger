@@ -99,6 +99,8 @@ add_library(
         src/tab_activation.h
         src/tab_group_model.cpp
         src/tab_group_model.h
+        src/tab_name_store.cpp
+        src/tab_name_store.h
         src/tab_strip_layout.cpp
         src/tab_strip_layout.h
         src/tab_strip_window.cpp

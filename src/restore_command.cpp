@@ -119,6 +119,64 @@ void LogLayoutReport(Logger* const logger,
 
 }  // namespace
 
+StartupTaskbarRecoveryResult RestorePreviousTaskbarSession(
+    Logger* const logger,
+    const std::filesystem::path& recovery_journal_path) {
+    StartupTaskbarRecoveryResult result;
+    RecoveryJournal journal(recovery_journal_path);
+    const RecoveryLoadResult load = journal.Load();
+    if (!load.succeeded) {
+        result.error_message =
+            L"The V1 recovery journal is invalid or unreadable: " +
+            load.error_message;
+        WriteMessage(logger, true, result.error_message);
+        return result;
+    }
+    if (load.states.empty()) {
+        result.succeeded = true;
+        return result;
+    }
+
+    result.recovery_attempted = true;
+    TaskbarController controller;
+    const TaskbarOperationResult initialized =
+        controller.InitializeTaskbarList();
+    if (!initialized.succeeded) {
+        result.error_message =
+            L"ITaskbarList initialization for startup V1 recovery failed: " +
+            initialized.message;
+        WriteMessage(logger, true, result.error_message);
+        return result;
+    }
+    FixedEntryManager manager(&controller, &journal);
+    std::wstring adopt_error;
+    if (!manager.AdoptRecoveryStates(load.states, &adopt_error)) {
+        result.error_message =
+            L"Adopting V1 startup recovery state failed: " + adopt_error;
+        WriteMessage(logger, true, result.error_message);
+        return result;
+    }
+    if (!RestoreTrackedWithRetry(
+            &manager, logger, L"Startup V1 taskbar restoration")) {
+        result.error_message =
+            L"The previous V1 taskbar state could not be recovered completely.";
+        return result;
+    }
+    std::wstring clear_error;
+    if (!manager.ResetAfterTaskbarRecreation(&clear_error)) {
+        result.error_message =
+            L"Clearing the recovered V1 journal failed: " + clear_error;
+        WriteMessage(logger, true, result.error_message);
+        return result;
+    }
+    WriteMessage(
+        logger,
+        false,
+        L"The previous V1 taskbar state was restored before startup.");
+    result.succeeded = true;
+    return result;
+}
+
 StartupGroupRecoveryResult RestorePreviousGroupSession(
     Logger* const logger,
     const std::filesystem::path& group_recovery_journal_path) {

@@ -117,6 +117,7 @@ void GeometrySyncSchedule::RecordEvent(
     }
     switch (event.kind) {
         case ChromeWindowEventKind::LocationChanged:
+        case ChromeWindowEventKind::MoveSizeEnded:
             location_hint_ = event.hwnd;
             break;
         case ChromeWindowEventKind::MinimizeStarted:

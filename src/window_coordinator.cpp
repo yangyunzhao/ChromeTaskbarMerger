@@ -134,6 +134,18 @@ bool RectanglesEqual(const RECT& left, const RECT& right) noexcept {
            left.right == right.right && left.bottom == right.bottom;
 }
 
+bool WindowGroupArrangementRequired(
+    const WindowGroupGeometry& current,
+    const WindowGroupGeometry& proposed,
+    const RECT& driver_bounds) noexcept {
+    if (!proposed.valid) {
+        return false;
+    }
+    return !current.valid ||
+           !RectanglesEqual(proposed.group_bounds, current.group_bounds) ||
+           !RectanglesEqual(proposed.content_bounds, driver_bounds);
+}
+
 bool RectangleFitsWithin(const RECT& rectangle,
                          const RECT& bounds) noexcept {
     return RectangleWidth(rectangle) > 0 && RectangleHeight(rectangle) > 0 &&

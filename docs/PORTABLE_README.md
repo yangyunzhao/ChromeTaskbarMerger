@@ -1,10 +1,10 @@
-# ChromeTaskbarMerger 1.0.0 portable x64
+# ChromeTaskbarMerger V2 Phase 5 开发便携版（x64）
 
 ## 使用前提
 
 - Windows 11 x64；
-- WindowTabs（可以晚于本程序启动，但进入管理后必须保持运行）；
-- Chrome 主窗口可由 WindowTabs 到达和操作。
+- 默认内置标签模式不需要 WindowTabs；
+- 也可选择 WindowTabs 标签模式，保留其标签风格。
 
 本程序使用 `ITaskbarList::DeleteTab/AddTab`，只改变 Windows 任务栏注册状态，不关闭或修改 Chrome 配置文件。被合并的窗口可能不会出现在 Alt+Tab 中，这是当前版本的已知兼容性代价。
 
@@ -18,6 +18,7 @@
 - 暂停管理；
 - 恢复管理；
 - 恢复全部 Chrome 按钮；
+- 在“内置标签”和“WindowTabs 标签”之间二选一（重启生效）；
 - 配置“随 Windows 登录自动启动”；
 - 打开日志目录；
 - 查看“关于”、版本、开发人员和项目地址；
@@ -30,13 +31,21 @@
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+tab_provider=builtin
 windowtabs_check_interval_ms=3000
+tab_strip_alignment=center
+tab_strip_width_percent=60
+tab_width_px=180
 start_with_windows=false
 ```
 
-两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制管理中的 Chrome 扫描，`windowtabs_check_interval_ms` 控制等待期间的 WindowTabs 检测。`start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会立即保存并应用；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
+`tab_provider` 只接受 `builtin` 或 `windowtabs`。`builtin` 是默认值，使用本程序自研标签和窗口组；`windowtabs` 不创建内置标签或重排 Chrome，由 WindowTabs 提供标签，本程序只负责任务栏单入口。托盘选择或直接编辑后，都必须完全退出并重新启动才能切换模式。
 
-无论程序是手动启动还是随当前用户登录启动，WindowTabs 尚未运行时都会进入“等待 WindowTabs”，并持续低频检测，不会移除 Chrome 按钮。WindowTabs 就绪后自动进入“管理中”；管理期间 WindowTabs 退出时会先恢复按钮并等待其重启。只有用户主动选择“暂停管理”后才会保持暂停。移动便携目录后，需要从新位置手动运行一次以修复启动路径。
+两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制 Chrome 扫描，`windowtabs_check_interval_ms` 仅在选择 WindowTabs 时控制等待检测。内置标签栏支持 `left/center/right` 对齐、25～100 的总宽度百分比以及 80～400 逻辑像素的单标签最大宽度。非法值会回退安全默认值并记录警告。
+
+`start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会原子保存并同步当前用户 Run 项；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
+
+内置模式完全不等待 WindowTabs；如果检测到 WindowTabs 同时运行，会先恢复任务栏和窗口布局，再进入冲突暂停，退出 WindowTabs 后自动重新准备。WindowTabs 模式在其尚未运行时保持所有任务栏入口可见并持续低频等待，就绪后自动进入管理；运行期间 WindowTabs 退出时先恢复按钮，再等待其重启。只有用户主动选择“暂停管理”后才会保持暂停。移动便携目录后，需要从新位置手动运行一次以修复启动路径。
 
 ## 日志和崩溃恢复
 
@@ -45,15 +54,17 @@ start_with_windows=false
 ```text
 %LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log
 %LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv
+%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v2.tsv
+%LOCALAPPDATA%\ChromeTaskbarMerger\tab-names-v1.tsv
 ```
 
-每次移除按钮前，程序都会先原子写入恢复记录。恢复时会核对 HWND、PID、TID、进程创建时间和窗口类，拒绝把陈旧记录用于其他窗口。
+每次移除按钮或修改内置组布局前，程序都会先原子写入恢复记录。恢复时会核对 HWND、PID、TID、进程创建时间、窗口类和原显示环境，拒绝把陈旧记录用于其他窗口。当前 `tab-names-v1.tsv` 仅是内部安全持久化原型，没有用户编辑入口，也不代表能够识别 Chrome profile。Phase 6 计划提供双击标签输入中文名称、仅在本程序当前进程内有效的编辑功能；Phase 7 编码前再评估能否可靠关联 Chrome profile，经用户确认后才考虑持久化。
 
 如果程序被强制结束，重新启动 EXE；它会先恢复仍能精确识别的上次状态，再继续管理。
 
 ## 手动恢复
 
-首选托盘菜单“恢复全部 Chrome 按钮”。也可在 PowerShell 中等待命令完成并读取退出码：
+首选托盘菜单“恢复全部任务栏和窗口布局”。也可在 PowerShell 中等待命令完成并读取退出码：
 
 ```powershell
 $process = Start-Process `

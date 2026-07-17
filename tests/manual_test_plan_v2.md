@@ -21,9 +21,9 @@
 | 2 | 事件驱动窗口与标签生命周期 | 通过 | 通过 | `PASS` |
 | 3 | 窗口位置、状态与 DPI | 通过 | 通过（跨显示器/DPI `NOT RUN`） | `PASS` |
 | 4 | 原子恢复、异常终止与故障注入 | 通过 | 通过 | `PASS` |
-| 5 | 正式状态机、托盘、配置与登录启动迁移 | 未执行 | 必须 | `NOT RUN` |
-| 6 | Explorer、显示环境与交互完善 | 未执行 | 必须 | `NOT RUN` |
-| 7 | 2.0.0 发布候选与正式发布 | 未执行 | 必须 | `NOT RUN` |
+| 5 | 正式状态机、托盘、配置与登录启动迁移 | 通过 | 通过（实际注销移至 Phase 7） | `PASS` |
+| 6 | Explorer、显示环境、交互与仅内存自定义名称 | 未执行 | 必须 | `NOT RUN` |
+| 7 | Chrome profile 名称持久化评估、2.0.0 发布 | 未执行 | 必须 | `NOT RUN` |
 
 ## Phase 0：V1 基线保护与 V2 测试骨架
 
@@ -624,7 +624,7 @@ caption/system menu/minimize/maximize 样式完整，并覆盖最大化、最小
 的原矩形恢复。当时真实 Chrome 复测尚未完成。
 
 同日新增的标签栏对齐、总宽度百分比、单标签宽度和自定义显示名称需求已写入 V2 设计：
-Phase 5 实现配置模型、校验、迁移和持久化，Phase 6 实现对应布局、溢出及名称编辑交互；
+Phase 5 实现配置模型、校验、迁移、持久化和基础布局，Phase 6 实现溢出及名称编辑交互；
 这些外观配置不扩大 Phase 3 的验收范围。
 
 修复后真实 Chrome 复测进度（2026-07-17）：用户确认整体表现正常，最大化覆盖、Chrome
@@ -788,9 +788,229 @@ ctest --test-dir .\build-portable -C Release --output-on-failure
 | 安全性 | 未出现 `RECOVERY REQUIRED`、不可达窗口或无关窗口被移动 | PASS |
 
 Phase 4 结论：Debug/Release 13/13 自动测试及两轮真实 Chrome 强制结束恢复均通过，状态标记为
-`PASS`。Phase 5 尚未开始。
+`PASS`。Phase 5 的自动与调整后人工验收结果见下节。
 
-## Phase 5～7
+## Phase 5：正式状态机、托盘、配置与登录启动迁移
 
-尚未开始。进入每个 Phase 后，本文件将记录实际命令、自动结果、必要的人工步骤、用户
-回报和恢复方法，不提前把计划项目写成已通过。
+当前状态：`PASS`。
+
+新增需求登记（2026-07-17）：V2 必须提供严格二选一的标签提供方式。默认 `builtin` 使用
+本项目自研标签栏和窗口组；可选 `windowtabs` 保留部分用户偏好的 WindowTabs 标签风格，本
+项目只负责 V1 已验证的任务栏单入口。配置键为 `tab_provider=builtin|windowtabs`，可直接编辑
+INI 或通过托盘单选菜单保存，完全退出并重启后生效。内置模式不得等待 WindowTabs；WindowTabs
+模式不得同时创建内置标签或重排 Chrome 布局，WindowTabs 未就绪时任务栏入口保持可见并自动
+等待。配置、状态机、托盘、迁移和两种真实运行模式均属于 Phase 5 的阻塞验收范围。
+
+### 实现范围
+
+- 无参数启动根据 `tab_provider=builtin|windowtabs` 严格选择一个托盘后端；默认内置模式托管
+  Phase 4 标签、窗口组、生命周期、几何和原子恢复，不再显示控制台或要求 `V2-START`；
+- WindowTabs 模式不创建内置标签、不重排 Chrome，只在 WindowTabs 就绪后应用 V1 任务栏
+  单入口；缺失时恢复所有入口并自动等待；
+- 两种托盘均显示当前提供方式，提供扫描、暂停、恢复、恢复全部、标签方式单选、登录启动、
+  日志、关于和退出；标签方式切换先恢复当前会话，原子保存后重启生效；
+- 状态机覆盖初始化、准备、提供器等待、管理、用户暂停、冲突、错误和恢复门禁；用户暂停具有
+  粘性，恢复未完成时不能切换模式或普通恢复；
+- 配置新增提供器、标签栏左/中/右对齐、总宽度百分比和单标签宽度；V1 缺键配置迁移为内置
+  默认，旧键、注释和其他节保留；
+- 新增版本化 `tab-names-v1.tsv` 技术原型。名称规则不使用 HWND，仅在进程路径、窗口类和精确
+  标题唯一匹配时应用；歧义时使用 Chrome 原标题。该原型不是 profile 关联功能的完成证据；
+  Phase 6 实现仅内存编辑，Phase 7 编码前先评估 profile 持久化可行性；
+- 内置和 WindowTabs 后端共享单实例通知、启动旧会话恢复、`--restore-all` 和当前用户登录
+  启动路径修复。
+
+### 自动验收结果
+
+| 项目 | 预期结果 | 实际结果 | 状态 |
+| --- | --- | --- | --- |
+| Debug CTest | V1、Phase 0～4 回归及 Phase 5 测试通过 | 14/14 通过 | PASS |
+| Release CTest | V1、Phase 0～4 回归及 Phase 5 测试通过 | 14/14 通过 | PASS |
+| 提供器状态机 | 内置独立准备/冲突；WindowTabs 等待/就绪/退出；用户暂停粘性 | 全部转换测试通过 | PASS |
+| V1 配置迁移 | 缺少 V2 键时默认内置，旧键及有效值保留 | 测试通过 | PASS |
+| 配置校验 | 提供器、对齐、百分比、像素的合法/非法/重复值 | 范围与逐项警告测试通过 | PASS |
+| 原子配置保存 | 切换提供器去除重复项、保留注释和其他节；失败明确返回 | 成功与失败路径通过 | PASS |
+| 标签栏配置 | 左/中/右和 60% 几何正确，180px 上限及 DPI 缩放正确 | 纯布局测试通过 | PASS |
+| 自定义名称模型 | 版本/UTF-8/重复拒绝/原子保存；不使用 HWND；歧义不套用 | 新增名称规则测试通过 | PASS |
+| 登录启动 | 临时注册表覆盖中的启用、关闭、路径修复和失败回滚 | 既有回归继续通过 | PASS |
+| 单实例命令 | 同步恢复与异步扫描消息到达同一托盘实例 | 既有回归继续通过 | PASS |
+| 启动双日志恢复 | 先恢复 V1 任务栏日志，再恢复 V2 任务栏和布局；陈旧 HWND 安全跳过且重复执行幂等 | 新增启动恢复测试通过 | PASS |
+| 全新便携构建 | 双配置、测试、安装、配置清单和 ZIP 成功 | 四文件目录及 ZIP 完整 | PASS |
+| 源码检查 | `/W4` 无警告，`git diff --check` 通过 | 两种配置均无警告，差异检查通过 | PASS |
+
+核心命令：
+
+```powershell
+.\scripts\build-portable.ps1
+ctest --test-dir .\build-portable -C Debug --output-on-failure
+ctest --test-dir .\build-portable -C Release --output-on-failure
+```
+
+### 必需人工验收
+
+测试前保存 Chrome 中正在编辑的内容，完全退出已安装/便携版 ChromeTaskbarMerger 和
+WindowTabs。保留 3 个普通、未最小化、未最大化、未 Snap 的 Chrome 主窗口，分别放在三个
+明显不同的位置。测试过程中若发生异常，不要结束 Chrome。
+
+先把开发配置复制到 Debug EXE 旁边：
+
+```powershell
+Copy-Item .\config\ChromeTaskbarMerger.ini `
+  .\build-portable\Debug\ChromeTaskbarMerger.ini -Force
+```
+
+#### A. 默认内置标签模式
+
+1. 确认 Debug 目录 INI 包含：
+
+   ```ini
+   tab_provider=builtin
+   tab_strip_alignment=center
+   tab_strip_width_percent=60
+   tab_width_px=180
+   start_with_windows=false
+   ```
+
+2. 运行：
+
+   ```powershell
+   .\build-portable\Debug\ChromeTaskbarMerger.exe
+   ```
+
+3. 预期没有控制台和确认提示，通知区域出现一个图标；右键状态为“管理中”，标签提供方式勾选
+   “内置标签（默认）”；三个 Chrome 自动成为内置标签组，任务栏只剩一个 Chrome 入口；
+4. 确认标签栏在组顶部居中，约占组宽 60%，每个标签明显短于 Phase 4 的旧默认长标签；逐个切换
+   三个标签，拖动/缩放任意活动 Chrome，确认组继续同步；
+5. 右键选择“暂停管理”，预期内置标签栏消失、三个任务栏入口和三个测试前独立位置恢复，状态
+   为“已暂停（用户）”；等待数秒，确认不会自行恢复；
+6. 选择“恢复管理”，预期重新建立内置标签和一个任务栏入口；再次双击 EXE，预期不会出现第二
+   个托盘图标，现有实例收到重新扫描通知；
+7. 在内置模式运行时启动 WindowTabs。预期本程序先恢复任务栏和独立位置，状态变成
+   “已暂停（WindowTabs 冲突）”，不会同时保留两套标签；完全退出 WindowTabs 后，内置模式
+   自动重新建立组。
+
+#### B. WindowTabs 标签模式
+
+1. 在托盘“标签提供方式（重启生效）”选择“WindowTabs 标签”。预期当前内置会话先完整恢复，
+   INI 写成 `tab_provider=windowtabs`，并提示重启生效；
+2. 从托盘正常退出，先启动 WindowTabs，再重新运行 Debug EXE；
+3. 预期托盘状态为“管理中”，只看到 WindowTabs 标签，不出现本程序内置标签，Chrome 不被本
+   程序重排，任务栏仍只有一个 Chrome 入口；
+4. 完全退出 WindowTabs。预期本程序恢复三个任务栏入口并进入“等待 WindowTabs”；重新启动
+   WindowTabs 后自动回到管理中和一个任务栏入口；
+5. 用户主动“暂停管理”后，再退出/启动 WindowTabs，预期状态保持用户暂停，不自动覆盖；选择
+   “恢复管理”后才重新应用任务栏规则；
+6. 从托盘把标签提供方式重新选回“内置标签（默认）”，正常退出并重启，确认回到 A 模式。
+
+#### C. 布局配置和登录启动
+
+1. 暂停并退出程序，把 INI 改成 `tab_strip_alignment=left`、
+   `tab_strip_width_percent=40`、`tab_width_px=120`，重新运行；预期标签栏靠左且变窄，标签仍可
+   点击，Chrome 原生标签和右上角系统按钮无遮挡；也可改 `right` 重启验证靠右；
+2. 托盘勾选“随 Windows 登录自动启动”，确认 INI 变成 `start_with_windows=true`，并运行：
+
+   ```powershell
+   Get-ItemProperty `
+     HKCU:\Software\Microsoft\Windows\CurrentVersion\Run `
+     -Name ChromeTaskbarMerger
+   ```
+
+   预期指向当前 Debug EXE 并带 `--autostart`；
+3. 注销并重新登录 Windows。预期程序自动出现于通知区域，并按当前选择的标签方式进入正确状态；
+   用户因当前不便注销，将此项明确移到 Phase 7 最终便携包验收；
+4. 验收后取消托盘勾选，再次运行上面的注册表命令应提示该值不存在；确认 INI 恢复
+   `start_with_windows=false`，最后从托盘正常退出。
+
+用户回报模板：
+
+```text
+内置模式无控制台自动建组、任务栏 1 个入口：是/否
+内置标签居中 60%，切换、拖动、缩放正常：是/否
+暂停恢复三个入口和三个独立位置，且保持用户暂停：是/否
+恢复管理及第二实例重新扫描正常：是/否
+内置模式启动 WindowTabs 后安全冲突暂停，退出后自动恢复：是/否
+WindowTabs 模式无内置标签/不重排，任务栏 1 个入口：是/否
+WindowTabs 退出后恢复入口并等待，重启后自动管理：是/否
+WindowTabs 模式用户暂停具有粘性：是/否
+标签提供方式切换、保存、重启和回切正常：是/否
+left/right、40%、120px 配置正常且不遮挡 Chrome：是/否
+登录启动项启用、路径/参数、INI 同步和关闭清理可逆：是/否
+实际注销/重新登录（移至 Phase 7）：未执行/是/否
+是否出现 RECOVERY REQUIRED、不可达窗口、双重标签或退出残留：
+其他现象：
+```
+
+### 最终人工验收结果（2026-07-17）
+
+| 项目 | 实际结果 | 状态 |
+| --- | --- | --- |
+| 默认内置模式 | 无控制台自动建立 3 标签，任务栏 1 个入口，切换、拖动、缩放正常 | PASS |
+| 暂停、恢复与单实例 | 恢复 3 个入口和原独立位置；用户暂停保持；恢复管理及第二实例扫描正常 | PASS |
+| WindowTabs 模式 | 无内置标签、不重排；退出后恢复入口并等待，重启后自动管理 | PASS |
+| 提供器二选一 | 切换前完整恢复，INI 原子保存，重启生效并可回切内置模式 | PASS |
+| 布局配置 | 两轮 `40%/120px` 与 left/right 后恢复默认 `center/60%/180px`，Chrome 原生 UI 无遮挡 | PASS |
+| 初始非普通窗口 | 切回内置模式时至少一个 Chrome 非 normal，安全拒绝建组；恢复普通状态后成功，不是崩溃或恢复损坏 | PASS（安全门禁） |
+| 垂直拖动缺陷 | 首轮发现工作区边界约束时驱动 Chrome 可能与另两个成员错位；修复并增加最终移动事件与纠偏日志 | FIXED |
+| 拖动修复复测 | 三个 Chrome 分别完成上下、边界、快速、斜向及左右拖动；用户确认未再错位，日志显示精确纠偏 | PASS |
+| 登录启动开关 | Run 值为带引号的当前便携 EXE 加 `--autostart`，INI 同步 `true`；取消后 Run 删除且 INI 为 `false` | PASS |
+| 实际注销/重新登录 | 用户当前不便重启/注销，明确移至 Phase 7 最终验收 | DEFERRED TO PHASE 7 |
+| 安全性 | 未出现 `RECOVERY REQUIRED`、不可达窗口、双重标签或无法清理的 Run 项 | PASS |
+
+垂直拖动根因：组高度接近工作区高度时，上下拖动会被约束到上下边界；约束后的组矩形可能与
+当前组矩形相同，旧逻辑因此跳过同步，却没有检查鼠标驱动的 Chrome 实际矩形是否仍偏移。修复
+后 `WindowGroupArrangementRequired` 同时比较组矩形和驱动窗口实际内容矩形，并监听
+`EVENT_SYSTEM_MOVESIZEEND` 在松开鼠标后做最终同步。`GROUP_GEOMETRY_CORRECTION` 只在检测到
+偏移时记录 HWND/身份、实际矩形和目标矩形。新增合成边界与移动结束测试后，全新 Debug/Release
+14/14 CTest 通过。
+
+Phase 5 结论：调整后的全部自动与人工验收通过，状态标记为 `PASS`。实际注销后的自动启动观察
+不丢弃，作为 Phase 7 正式便携包的阻塞人工项目执行。
+
+### 异常时安全恢复
+
+- 首选托盘“恢复全部任务栏和窗口布局”；若托盘不可用，运行：
+
+  ```powershell
+  .\build-portable\Debug\ChromeTaskbarMerger.exe --restore-all
+  $LASTEXITCODE
+  ```
+
+- 预期退出码为 `0`。不要删除 `%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv` 或
+  `recovery-v2.tsv`；不要结束 Chrome；
+- 若任务栏入口仍缺失，在任务管理器中重启“Windows 资源管理器”，再运行一次
+  `--restore-all`；
+- 若登录启动测试后程序路径失效，可执行以下命令关闭当前用户启动项：
+
+  ```powershell
+  Remove-ItemProperty `
+    HKCU:\Software\Microsoft\Windows\CurrentVersion\Run `
+    -Name ChromeTaskbarMerger -ErrorAction SilentlyContinue
+  ```
+
+- 日志位于 `%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log`。失败时保留日志和
+  两个恢复文件并告诉 Codex，不要强制结束 Chrome。
+
+## Phase 6：自定义名称内存编辑及交互完善
+
+当前状态：`NOT RUN`。
+
+新增需求登记（2026-07-17）：双击内置标签主体后允许输入自定义字符串，完整支持中文。
+`Enter` 确认、`Esc` 取消，空字符串恢复 Chrome 实时标题；不修改 Chrome 窗口标题。名称只保存
+在 ChromeTaskbarMerger 当前进程的内存中，只要程序不重启且窗口完整身份仍有效，就不能被网页
+标题变化、暂停/恢复或重新建组覆盖；重启程序后恢复实时标题。WindowTabs 提供器不使用此功能。
+
+自动验收至少覆盖双击命中、Unicode/中文、确认/取消、空值、长度上限、标题变化、身份失效、
+进程级模型重建和“不写持久化文件”。人工验收使用三个真实 Chrome 输入英文、中文和混合名称，
+验证暂停/恢复后保留、程序重启后清除。
+
+## Phase 7：Chrome profile 名称持久化与正式发布
+
+当前状态：`NOT RUN`。
+
+第二阶段属于高级功能，编码前必须先评估并向用户报告顶层 Chrome HWND 与本地 profile 的可靠
+关联能力，包括本地 profile 与 Google 账户差异、同 profile 多窗口、访客/无痕、多个数据目录、
+重命名/删除和隐私边界。只有用户确认评估结论和降级方案后才能开发。不得用 HWND、网页标题、
+进程路径或窗口顺序伪造 profile 关联；若无法可靠实现，保留 Phase 6 的仅内存名称并明确记录。
+
+若批准实现，需验证至少两个真实 Chrome profile 的中文名称在 ChromeTaskbarMerger/Chrome
+重启后正确恢复且不串用。本 Phase 同时执行 Phase 5 延后的实际注销/重新登录启动观察，并完成
+其余 `2.0.0` 最终便携包验收与发布门禁。

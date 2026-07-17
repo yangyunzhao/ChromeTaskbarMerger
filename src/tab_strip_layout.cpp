@@ -8,7 +8,6 @@ namespace {
 
 constexpr int kOuterPadding = 4;
 constexpr int kTabGap = 2;
-constexpr int kMaximumTabWidth = 240;
 constexpr int kCloseButtonSize = 18;
 constexpr int kCloseButtonMargin = 4;
 constexpr int kMinimumWidthWithCloseButton = 34;
@@ -30,12 +29,18 @@ constexpr int kMinimumWidthWithCloseButton = 34;
 
 TabStripLayout CalculateTabStripLayout(const SIZE client_size,
                                        const std::size_t tab_count,
-                                       const UINT dpi) {
+                                       const UINT dpi,
+                                       const int maximum_tab_width_pixels) {
     TabStripLayout layout;
     layout.client_size = client_size;
     const int outer_padding = Scaled(kOuterPadding, dpi);
     const int tab_gap = Scaled(kTabGap, dpi);
-    const int maximum_tab_width = Scaled(kMaximumTabWidth, dpi);
+    const int maximum_tab_width = Scaled(
+        std::clamp(
+            maximum_tab_width_pixels,
+            kMinimumTabWidthPixels,
+            kMaximumTabWidthPixels),
+        dpi);
     const int close_button_size = Scaled(kCloseButtonSize, dpi);
     const int close_button_margin = Scaled(kCloseButtonMargin, dpi);
     const int minimum_width_with_close_button =
@@ -88,6 +93,37 @@ TabStripLayout CalculateTabStripLayout(const SIZE client_size,
         left = item.bounds.right + tab_gap;
     }
     return layout;
+}
+
+RECT CalculateConfiguredTabStripBounds(
+    const RECT& group_bounds,
+    const int tab_strip_height,
+    const TabStripAlignment alignment,
+    const int width_percent) noexcept {
+    const int group_width = group_bounds.right - group_bounds.left;
+    const int group_height = group_bounds.bottom - group_bounds.top;
+    if (group_width <= 0 || group_height <= 0 ||
+        tab_strip_height <= 0 || tab_strip_height >= group_height) {
+        return {};
+    }
+    const int safe_percent = std::clamp(
+        width_percent,
+        kMinimumTabStripWidthPercent,
+        kMaximumTabStripWidthPercent);
+    const int strip_width = std::max(
+        1, MulDiv(group_width, safe_percent, 100));
+    int left = group_bounds.left;
+    if (alignment == TabStripAlignment::Center) {
+        left += (group_width - strip_width) / 2;
+    } else if (alignment == TabStripAlignment::Right) {
+        left = group_bounds.right - strip_width;
+    }
+    return {
+        .left = left,
+        .top = group_bounds.top,
+        .right = left + strip_width,
+        .bottom = group_bounds.top + tab_strip_height,
+    };
 }
 
 TabHitResult HitTestTabStrip(const TabStripLayout& layout,

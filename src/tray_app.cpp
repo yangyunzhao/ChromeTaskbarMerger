@@ -7,9 +7,11 @@
 #include "logger.h"
 #include "management_state.h"
 #include "recovery_journal.h"
+#include "restore_command.h"
 #include "single_instance.h"
 #include "taskbar_controller.h"
 #include "windowtabs_presence.h"
+#include "v2_experiment.h"
 
 #include <Windows.h>
 #include <CommCtrl.h>
@@ -41,6 +43,8 @@ constexpr UINT kMenuOpenLogs = 105;
 constexpr UINT kMenuAbout = 106;
 constexpr UINT kMenuStartWithWindows = 107;
 constexpr UINT kMenuExit = 108;
+constexpr UINT kMenuProviderBuiltIn = 109;
+constexpr UINT kMenuProviderWindowTabs = 110;
 
 constexpr wchar_t kProjectUrl[] =
     L"https://github.com/yangyunzhao/ChromeTaskbarMerger";
@@ -119,8 +123,10 @@ public:
         : instance_(instance),
           logger_(logger),
           config_(config),
+          configured_provider_(config.tab_provider),
           configuration_path_(std::move(configuration_path)),
           executable_path_(std::move(executable_path)),
+          management_state_(TabProvider::WindowTabs),
           recovery_journal_(std::move(recovery_path)),
           manager_(&controller_, &recovery_journal_) {}
 
@@ -361,6 +367,45 @@ private:
             NIIF_INFO);
     }
 
+    void SelectTabProvider(const TabProvider provider) {
+        if (configured_provider_ == provider) {
+            return;
+        }
+        if (management_state_.recovery_required()) {
+            ShowNotification(
+                L"需要先恢复",
+                L"请先使用“恢复全部 Chrome 按钮”，再切换标签方式。",
+                NIIF_WARNING);
+            return;
+        }
+        if (management_state_.can_pause()) {
+            PauseManagement();
+            if (management_state_.recovery_required()) {
+                return;
+            }
+        }
+        const AppConfigSaveResult saved =
+            SaveTabProviderSetting(configuration_path_, provider);
+        if (!saved.succeeded) {
+            LogError(L"Saving tab_provider failed: " + saved.error_message);
+            ShowNotification(
+                L"标签方式未保存",
+                L"无法原子更新配置，当前选择保持不变。",
+                NIIF_ERROR);
+            return;
+        }
+        configured_provider_ = provider;
+        LogInfo(
+            L"Tab provider saved as " +
+            std::wstring(TabProviderDisplayName(provider)) +
+            L"; restart is required.");
+        ShowNotification(
+            L"标签方式已保存",
+            L"完全退出并重新启动后切换为“" +
+                std::wstring(TabProviderDisplayName(provider)) + L"”。",
+            NIIF_INFO);
+    }
+
     void InitializeRecoveryAndManagement() {
         const RecoveryLoadResult load = recovery_journal_.Load();
         if (!load.succeeded) {
@@ -428,7 +473,8 @@ private:
 
     [[nodiscard]] bool Synchronize(const std::wstring_view label,
                                    const bool notify_on_failure) {
-        if (!management_state_.managing()) {
+        if (!management_state_.managing() &&
+            !management_state_.preparing()) {
             return true;
         }
 
@@ -514,6 +560,8 @@ private:
                         : L"同步失败，且按钮未能完全恢复，请查看日志。",
                     restored ? NIIF_WARNING : NIIF_ERROR);
             }
+        } else if (management_state_.preparing()) {
+            management_state_.PreparationCompleted(true);
         }
         UpdateTrayTooltip();
         return report.succeeded;
@@ -682,11 +730,10 @@ private:
         if (!management_state_.WindowTabsBecameAvailable()) {
             return;
         }
-        if (!RefreshLifecycle(L"WindowTabs became available")) {
-            return;
-        }
         if (Synchronize(L"WindowTabs availability synchronization", true) &&
             management_state_.managing()) {
+            static_cast<void>(RefreshLifecycle(
+                L"WindowTabs became available"));
             ShowNotification(
                 L"自动恢复管理",
                 L"WindowTabs 已就绪，任务栏单入口管理已启动。",
@@ -745,10 +792,8 @@ private:
         if (!management_state_.ResumeRequested(available)) {
             return;
         }
-        if (!RefreshLifecycle(L"user requested resume")) {
-            return;
-        }
         if (management_state_.waiting_for_windowtabs()) {
+            static_cast<void>(RefreshLifecycle(L"user requested resume"));
             ShowNotification(
                 L"正在等待 WindowTabs",
                 L"WindowTabs 就绪后将自动恢复管理。",
@@ -757,6 +802,7 @@ private:
         }
         if (Synchronize(L"Tray resume synchronization", true) &&
             management_state_.managing()) {
+            static_cast<void>(RefreshLifecycle(L"user requested resume"));
             ShowNotification(
                 L"管理已恢复",
                 L"Chrome 任务栏单入口规则已重新应用。",
@@ -916,12 +962,16 @@ private:
         switch (management_state_.state()) {
             case ManagementState::Initializing:
                 return L"正在初始化";
-            case ManagementState::WaitingForWindowTabs:
+            case ManagementState::PreparingGroup:
+                return L"正在准备";
+            case ManagementState::WaitingForTabProvider:
                 return L"等待 WindowTabs";
             case ManagementState::Managing:
                 return L"管理中";
             case ManagementState::PausedByUser:
                 return L"已暂停（用户）";
+            case ManagementState::PausedByConflict:
+                return L"已暂停（冲突）";
             case ManagementState::PausedByError:
                 return L"已暂停（异常）";
             case ManagementState::RecoveryRequired:
@@ -932,7 +982,14 @@ private:
 
     void ShowContextMenu(POINT point) {
         HMENU menu = CreatePopupMenu();
-        if (menu == nullptr) {
+        HMENU provider_menu = CreatePopupMenu();
+        if (menu == nullptr || provider_menu == nullptr) {
+            if (provider_menu != nullptr) {
+                DestroyMenu(provider_menu);
+            }
+            if (menu != nullptr) {
+                DestroyMenu(menu);
+            }
             return;
         }
         const std::wstring status =
@@ -954,6 +1011,27 @@ private:
             L"恢复管理");
         AppendMenuW(menu, MF_STRING, kMenuRestoreAll, L"恢复全部 Chrome 按钮");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(
+            provider_menu,
+            MF_STRING |
+                (configured_provider_ == TabProvider::BuiltIn
+                     ? MF_CHECKED
+                     : MF_UNCHECKED),
+            kMenuProviderBuiltIn,
+            L"内置标签（默认）");
+        AppendMenuW(
+            provider_menu,
+            MF_STRING |
+                (configured_provider_ == TabProvider::WindowTabs
+                     ? MF_CHECKED
+                     : MF_UNCHECKED),
+            kMenuProviderWindowTabs,
+            L"WindowTabs 标签");
+        AppendMenuW(
+            menu,
+            MF_POPUP,
+            reinterpret_cast<UINT_PTR>(provider_menu),
+            L"标签提供方式（重启生效）");
         AppendMenuW(
             menu,
             MF_STRING |
@@ -1012,6 +1090,12 @@ private:
             case kMenuStartWithWindows:
                 ToggleStartWithWindows();
                 break;
+            case kMenuProviderBuiltIn:
+                SelectTabProvider(TabProvider::BuiltIn);
+                break;
+            case kMenuProviderWindowTabs:
+                SelectTabProvider(TabProvider::WindowTabs);
+                break;
             case kMenuOpenLogs:
                 OpenLogDirectory();
                 break;
@@ -1045,7 +1129,8 @@ private:
     [[nodiscard]] std::wstring BuildTooltip() const {
         std::wstring tooltip = L"ChromeTaskbarMerger - " +
                                std::wstring(ManagementStateDisplayName());
-        tooltip += L" (Chrome " + std::to_wstring(last_window_count_) + L")";
+        tooltip += L" - WindowTabs 标签 (Chrome " +
+                   std::to_wstring(last_window_count_) + L")";
         return tooltip;
     }
 
@@ -1210,6 +1295,7 @@ private:
     HINSTANCE instance_ = nullptr;
     Logger* logger_ = nullptr;
     AppConfig config_;
+    TabProvider configured_provider_ = TabProvider::WindowTabs;
     std::filesystem::path configuration_path_;
     std::filesystem::path executable_path_;
     HWND window_ = nullptr;
@@ -1300,6 +1386,7 @@ int RunTrayApplication(
     Logger* const logger,
     const AppConfig& config,
     const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path,
     const std::filesystem::path& configuration_path,
     const std::filesystem::path& executable_path,
     const bool launched_at_login) {
@@ -1348,6 +1435,39 @@ int RunTrayApplication(
             }
         }
         return cleanup.succeeded ? 0 : 4;
+    }
+
+    const StartupTaskbarRecoveryResult taskbar_recovery =
+        RestorePreviousTaskbarSession(logger, recovery_journal_path);
+    if (!taskbar_recovery.succeeded) {
+        if (logger != nullptr) {
+            logger->Error(
+                L"Startup was blocked because the previous V1 taskbar state could not be recovered: " +
+                taskbar_recovery.error_message);
+        }
+        return 5;
+    }
+    const StartupGroupRecoveryResult group_recovery =
+        RestorePreviousGroupSession(
+            logger, group_recovery_journal_path);
+    if (!group_recovery.succeeded) {
+        if (logger != nullptr) {
+            logger->Error(
+                L"Startup was blocked because the previous V2 group could not be recovered: " +
+                group_recovery.error_message);
+        }
+        return 5;
+    }
+
+    if (config.tab_provider == TabProvider::BuiltIn) {
+        return RunBuiltInTrayApplication(
+            instance,
+            logger,
+            config,
+            recovery_journal_path,
+            group_recovery_journal_path,
+            configuration_path,
+            executable_path);
     }
 
     TrayApplication application(

@@ -13,6 +13,16 @@ struct StartupGroupRecoveryResult {
     std::wstring error_message;
 };
 
+struct StartupTaskbarRecoveryResult {
+    bool succeeded = false;
+    bool recovery_attempted = false;
+    std::wstring error_message;
+};
+
+[[nodiscard]] StartupTaskbarRecoveryResult RestorePreviousTaskbarSession(
+    Logger* logger,
+    const std::filesystem::path& recovery_journal_path);
+
 [[nodiscard]] StartupGroupRecoveryResult RestorePreviousGroupSession(
     Logger* logger,
     const std::filesystem::path& group_recovery_journal_path);

@@ -57,6 +57,7 @@ public:
     [[nodiscard]] bool SetVisible(
         bool visible,
         DWORD* error_code) noexcept;
+    void SetMaximumTabWidth(int logical_pixels) noexcept;
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsHealthy() const noexcept;
@@ -89,6 +90,7 @@ private:
     WindowIdentity active_identity_;
     TabStripLayout layout_;
     UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
+    int maximum_tab_width_pixels_ = kDefaultTabWidthPixels;
     HFONT font_ = nullptr;
 };
 

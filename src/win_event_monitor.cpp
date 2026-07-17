@@ -26,6 +26,8 @@ std::optional<ChromeWindowEventKind> TranslateWinEvent(
             return ChromeWindowEventKind::MinimizeStarted;
         case EVENT_SYSTEM_MINIMIZEEND:
             return ChromeWindowEventKind::MinimizeEnded;
+        case EVENT_SYSTEM_MOVESIZEEND:
+            return ChromeWindowEventKind::MoveSizeEnded;
         default:
             break;
     }

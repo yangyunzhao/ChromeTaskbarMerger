@@ -31,6 +31,10 @@ CalculateWindowGroupGeometryFromContentBounds(
 [[nodiscard]] bool RectanglesEqual(
     const RECT& left,
     const RECT& right) noexcept;
+[[nodiscard]] bool WindowGroupArrangementRequired(
+    const WindowGroupGeometry& current,
+    const WindowGroupGeometry& proposed,
+    const RECT& driver_bounds) noexcept;
 [[nodiscard]] bool RectangleFitsWithin(
     const RECT& rectangle,
     const RECT& bounds) noexcept;

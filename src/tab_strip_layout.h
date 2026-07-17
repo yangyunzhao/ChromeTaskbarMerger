@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app_config.h"
+
 #include <Windows.h>
 
 #include <cstddef>
@@ -33,7 +35,13 @@ struct TabHitResult {
 [[nodiscard]] TabStripLayout CalculateTabStripLayout(
     SIZE client_size,
     std::size_t tab_count,
-    UINT dpi = USER_DEFAULT_SCREEN_DPI);
+    UINT dpi = USER_DEFAULT_SCREEN_DPI,
+    int maximum_tab_width_pixels = 240);
+[[nodiscard]] RECT CalculateConfiguredTabStripBounds(
+    const RECT& group_bounds,
+    int tab_strip_height,
+    TabStripAlignment alignment,
+    int width_percent) noexcept;
 [[nodiscard]] TabHitResult HitTestTabStrip(
     const TabStripLayout& layout,
     POINT point) noexcept;

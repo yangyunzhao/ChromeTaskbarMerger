@@ -223,3 +223,20 @@ add_test(
     NAME v2_group_recovery
     COMMAND ChromeTaskbarMergerGroupRecoveryTests
 )
+
+add_executable(
+    ChromeTaskbarMergerTabNameStoreTests
+    tab_name_store_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerTabNameStoreTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerTabNameStoreTests)
+
+add_test(
+    NAME v2_tab_name_store
+    COMMAND ChromeTaskbarMergerTabNameStoreTests
+)
