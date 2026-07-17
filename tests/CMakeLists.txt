@@ -206,3 +206,20 @@ add_test(
         ChromeTaskbarMergerManifestTests
         $<TARGET_FILE:ChromeTaskbarMerger>
 )
+
+add_executable(
+    ChromeTaskbarMergerGroupRecoveryTests
+    group_recovery_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerGroupRecoveryTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerGroupRecoveryTests)
+
+add_test(
+    NAME v2_group_recovery
+    COMMAND ChromeTaskbarMergerGroupRecoveryTests
+)

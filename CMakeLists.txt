@@ -73,6 +73,8 @@ add_library(
         src/fixed_entry_app.h
         src/fixed_entry_manager.cpp
         src/fixed_entry_manager.h
+        src/group_recovery_journal.cpp
+        src/group_recovery_journal.h
         src/logger.cpp
         src/logger.h
         src/lifecycle_sync.cpp

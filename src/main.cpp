@@ -35,9 +35,9 @@ void PrintHelp() {
         << L"  --autostart     Internal Windows-login startup entry.\n"
         << L"  --list          List and classify Chrome top-level windows.\n"
         << L"  --experiment    Interactively test temporary taskbar removal.\n"
-        << L"  --v2-experiment Run the isolated V2 Phase 3 geometry and lifecycle experiment.\n"
+        << L"  --v2-experiment Run the isolated V2 Phase 4 persistent-recovery experiment.\n"
         << L"  --manage        Run the diagnostic console lifecycle monitor.\n"
-        << L"  --restore-all   Explicitly restore all identifiable Chrome buttons.\n\n"
+        << L"  --restore-all   Restore identifiable Chrome buttons and valid V2 layouts.\n\n"
         << L"With no option, start the V1 notification-area application.\n"
         << L"ChromeTaskbarMerger.ini beside the executable controls the scan "
            L"interval and Windows-login startup.\n";
@@ -156,7 +156,8 @@ int ListChromeWindows(ctm::Logger* const logger) {
 
 int RunRestoreAllCommand(
     ctm::Logger* const logger,
-    const std::filesystem::path& recovery_path) {
+    const std::filesystem::path& recovery_path,
+    const std::filesystem::path& group_recovery_path) {
     ctm::SingleInstanceGuard guard;
     DWORD mutex_error = ERROR_SUCCESS;
     const ctm::SingleInstanceStatus status =
@@ -181,10 +182,10 @@ int RunRestoreAllCommand(
         }
         std::wcout
             << L"The running tray instance restored all Chrome buttons and "
-               L"paused management.\n";
-        return 0;
+               L"paused management; persisted V2 layout recovery will now run.\n";
     }
-    return ctm::RunStandaloneRestoreAll(logger, recovery_path);
+    return ctm::RunStandaloneRestoreAll(
+        logger, recovery_path, group_recovery_path);
 }
 
 int RunApplication(const std::span<const std::wstring_view> arguments,
@@ -210,6 +211,9 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
     std::wstring recovery_path_error;
     const std::filesystem::path recovery_path =
         ctm::GetRecoveryJournalPath(&recovery_path_error);
+    std::wstring group_recovery_path_error;
+    const std::filesystem::path group_recovery_path =
+        ctm::GetGroupRecoveryJournalPath(&group_recovery_path_error);
 
     switch (options.command) {
         case ctm::Command::Run:
@@ -248,8 +252,12 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
         }
 
         case ctm::Command::V2Experiment: {
-            if (recovery_path.empty()) {
-                std::wcerr << L"Error: " << recovery_path_error << L'\n';
+            if (recovery_path.empty() || group_recovery_path.empty()) {
+                std::wcerr << L"Error: "
+                           << (recovery_path.empty()
+                                   ? recovery_path_error
+                                   : group_recovery_path_error)
+                           << L'\n';
                 return 5;
             }
             ctm::SingleInstanceGuard guard;
@@ -257,7 +265,10 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
                 return 4;
             }
             return ctm::RunV2Experiment(
-                instance, active_logger, recovery_path);
+                instance,
+                active_logger,
+                recovery_path,
+                group_recovery_path);
         }
 
         case ctm::Command::Manage: {
@@ -274,11 +285,16 @@ int RunApplication(const std::span<const std::wstring_view> arguments,
         }
 
         case ctm::Command::RestoreAll:
-            if (recovery_path.empty()) {
-                std::wcerr << L"Error: " << recovery_path_error << L'\n';
+            if (recovery_path.empty() || group_recovery_path.empty()) {
+                std::wcerr << L"Error: "
+                           << (recovery_path.empty()
+                                   ? recovery_path_error
+                                   : group_recovery_path_error)
+                           << L'\n';
                 return 5;
             }
-            return RunRestoreAllCommand(active_logger, recovery_path);
+            return RunRestoreAllCommand(
+                active_logger, recovery_path, group_recovery_path);
 
         case ctm::Command::ShowHelp:
             PrintHelp();

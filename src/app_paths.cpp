@@ -71,4 +71,18 @@ std::filesystem::path GetRecoveryJournalPath(
            L"ChromeTaskbarMerger" / L"recovery-v1.tsv";
 }
 
+std::filesystem::path GetGroupRecoveryJournalPath(
+    std::wstring* const error_message) {
+    const std::wstring local_app_data =
+        ReadEnvironmentVariable(L"LOCALAPPDATA");
+    if (local_app_data.empty()) {
+        if (error_message != nullptr) {
+            *error_message = L"LOCALAPPDATA is not available.";
+        }
+        return {};
+    }
+    return std::filesystem::path(local_app_data) /
+           L"ChromeTaskbarMerger" / L"recovery-v2.tsv";
+}
+
 }  // namespace ctm

@@ -3,8 +3,10 @@
 #include "chrome_window.h"
 #include "chrome_window_registry.h"
 #include "fixed_entry_manager.h"
+#include "group_recovery_journal.h"
 #include "lifecycle_sync.h"
 #include "recovery_journal.h"
+#include "restore_command.h"
 #include "tab_activation.h"
 #include "tab_group_model.h"
 #include "tab_strip_window.h"
@@ -388,7 +390,7 @@ void PrintCommands(Logger* const logger,
                    const bool recovery_required) {
     std::wostringstream output;
     output
-        << L"\nPhase 3 commands (single key; Enter is not required):\n"
+        << L"\nPhase 4 commands (single key; Enter is not required):\n"
         << L"  p  Restore taskbar and original window layout, then pause\n"
         << L"  r  Retry an incomplete restoration\n"
         << L"  q  Restore safely and exit\n"
@@ -405,16 +407,18 @@ public:
     V2ExperimentSession(
         const HINSTANCE instance,
         Logger* const logger,
-        std::filesystem::path recovery_path,
+        std::filesystem::path v1_recovery_path,
+        std::filesystem::path group_recovery_path,
         std::vector<ChromeWindowSnapshot> windows)
         : instance_(instance),
           logger_(logger),
           windows_(std::move(windows)),
-          recovery_journal_(std::move(recovery_path)),
+          v1_recovery_journal_(std::move(v1_recovery_path)),
+          group_recovery_journal_(std::move(group_recovery_path)),
           readiness_gate_(&model_),
           fixed_entry_manager_(
               &taskbar_controller_,
-              &recovery_journal_,
+              &group_recovery_journal_,
               &readiness_gate_),
           activation_(&model_, &activation_gateway_),
           lifecycle_schedule_(
@@ -445,7 +449,7 @@ public:
             return false;
         }
 
-        const RecoveryLoadResult recovery = recovery_journal_.Load();
+        const RecoveryLoadResult recovery = v1_recovery_journal_.Load();
         if (!recovery.succeeded) {
             WriteLine(
                 logger_,
@@ -458,6 +462,30 @@ public:
             WriteLine(
                 logger_,
                 L"A previous taskbar recovery obligation exists. Run --restore-all before the V2 experiment.",
+                true);
+            return false;
+        }
+
+        GroupRecoveryLoadResult group_recovery =
+            group_recovery_journal_.Load();
+        if (!group_recovery.succeeded) {
+            WriteLine(
+                logger_,
+                L"The V2 group recovery journal is invalid or unreadable: " +
+                    group_recovery.error_message,
+                true);
+            return false;
+        }
+        std::wstring group_adopt_error;
+        if (!group_recovery_journal_.Adopt(
+                std::move(group_recovery.state), &group_adopt_error) ||
+            group_recovery_journal_.state().HasObligations()) {
+            WriteLine(
+                logger_,
+                group_adopt_error.empty()
+                    ? L"A previous V2 group recovery obligation still exists; management is blocked."
+                    : L"Adopting the V2 group recovery journal failed: " +
+                          group_adopt_error,
                 true);
             return false;
         }
@@ -524,6 +552,16 @@ public:
                 true);
             return false;
         }
+        std::wstring group_write_error;
+        if (!group_recovery_journal_.BeginSession(
+                identities_, &group_write_error)) {
+            WriteLine(
+                logger_,
+                L"Persisting the Phase 4 group recovery intent failed before any layout mutation: " +
+                    group_write_error,
+                true);
+            return false;
+        }
 
         RECT anchor{};
         if (GetWindowRect(active_identity_.hwnd, &anchor) == FALSE) {
@@ -560,6 +598,15 @@ public:
                 true);
             return false;
         }
+        if (!group_recovery_journal_.MarkTabStripCreated(
+                true, &group_write_error)) {
+            WriteLine(
+                logger_,
+                L"Persisting tab-strip creation failed: " +
+                    group_write_error,
+                true);
+            return false;
+        }
         for (const WindowIdentity& identity : identities_) {
             if (!model_.MarkTabCreated(identity, true)) {
                 WriteLine(
@@ -572,12 +619,30 @@ public:
                 logger_,
                 L"ORDER 1 TAB_CREATED " + FormatIdentity(identity));
         }
+        if (!group_recovery_journal_.MarkTabsCreated(
+                identities_, true, &group_write_error)) {
+            WriteLine(
+                logger_,
+                L"Persisting tab creation completion failed: " +
+                    group_write_error,
+                true);
+            return false;
+        }
         model_.SetTabStripHealthy(tab_strip_.IsHealthy());
         if (!model_.tab_strip_healthy()) {
             WriteLine(logger_, L"The native tab strip is not healthy.", true);
             return false;
         }
 
+        if (!group_recovery_journal_.PlanLayoutMutation(
+                identities_, &group_write_error)) {
+            WriteLine(
+                logger_,
+                L"Persisting the layout write-ahead failed; no group move was attempted: " +
+                    group_write_error,
+                true);
+            return false;
+        }
         const WindowCoordinationResult arranged =
             placement_controller_.Arrange(geometry_, active_identity_);
         if (!arranged.succeeded) {
@@ -669,14 +734,14 @@ public:
                 MWMO_INPUTAVAILABLE);
             if (wait == WAIT_FAILED) {
                 fatal_error_ =
-                    L"The Phase 3 message wait failed with Win32 error " +
+                    L"The Phase 4 message wait failed with Win32 error " +
                     std::to_wstring(GetLastError()) + L'.';
             } else if (wait == WAIT_OBJECT_0) {
                 const ConsoleReadResult input =
                     ReadConsoleCommands(console_input);
                 if (!input.succeeded) {
                     fatal_error_ =
-                        L"Reading Phase 3 console input failed with Win32 error " +
+                        L"Reading Phase 4 console input failed with Win32 error " +
                         std::to_wstring(input.error_code) + L'.';
                 } else {
                     for (const wchar_t command : input.commands) {
@@ -692,7 +757,7 @@ public:
                        FALSE) {
                     if (message.message == WM_QUIT) {
                         fatal_error_ =
-                            L"The Phase 3 UI message loop received WM_QUIT.";
+                            L"The Phase 4 UI message loop received WM_QUIT.";
                         break;
                     }
                     if (message.hwnd == nullptr &&
@@ -846,7 +911,7 @@ private:
         DWORD error = ERROR_SUCCESS;
         if (!tab_strip_.SetVisible(visible, &error)) {
             fatal_error_ =
-                L"Changing the Phase 3 tab-strip visibility failed with Win32 error " +
+                L"Changing the Phase 4 tab-strip visibility failed with Win32 error " +
                 std::to_wstring(error) + L'.';
             return false;
         }
@@ -859,7 +924,7 @@ private:
         const std::wstring_view reason,
         const bool require_native_normal = false) {
         if (!geometry.valid) {
-            fatal_error_ = L"Phase 3 calculated an invalid group geometry.";
+            fatal_error_ = L"Phase 4 calculated an invalid group geometry.";
             return false;
         }
         const WindowCoordinationResult arranged = require_native_normal
@@ -867,14 +932,14 @@ private:
             : placement_controller_.Arrange(geometry, active_identity);
         if (!arranged.succeeded) {
             fatal_error_ =
-                L"Phase 3 group arrangement failed: " + arranged.message;
+                L"Phase 4 group arrangement failed: " + arranged.message;
             return false;
         }
         DWORD bounds_error = ERROR_SUCCESS;
         if (!tab_strip_.SetBounds(
                 geometry.tab_strip_bounds, &bounds_error)) {
             fatal_error_ =
-                L"Moving the Phase 3 tab strip failed with Win32 error " +
+                L"Moving the Phase 4 tab strip failed with Win32 error " +
                 std::to_wstring(bounds_error) + L'.';
             return false;
         }
@@ -882,7 +947,7 @@ private:
             static_cast<void>(model_.SetActive(active_identity));
             if (!UpdateActiveVisual(active_identity)) {
                 fatal_error_ =
-                    L"The Phase 3 tab strip could not follow the geometry driver.";
+                    L"The Phase 4 tab strip could not follow the geometry driver.";
                 return false;
             }
         }
@@ -917,14 +982,14 @@ private:
         RECT driver_bounds{};
         if (GetWindowRect(driver->hwnd, &driver_bounds) == FALSE) {
             fatal_error_ =
-                L"Reading the Phase 3 geometry driver failed with Win32 error " +
+                L"Reading the Phase 4 geometry driver failed with Win32 error " +
                 std::to_wstring(GetLastError()) + L'.';
             return false;
         }
         const MonitorGeometry monitor =
             QueryMonitorGeometry(driver->hwnd);
         if (!monitor.succeeded) {
-            fatal_error_ = L"Reading the Phase 3 monitor geometry failed.";
+            fatal_error_ = L"Reading the Phase 4 monitor geometry failed.";
             return false;
         }
 
@@ -1065,7 +1130,7 @@ private:
                 TabStripHeightForWindow(driver->hwnd));
         if (!moved.valid) {
             fatal_error_ =
-                L"The moved Chrome rectangle cannot form a safe Phase 3 group.";
+                L"The moved Chrome rectangle cannot form a safe Phase 4 group.";
             return false;
         }
         if (RectanglesEqual(moved.group_bounds, geometry_.group_bounds)) {
@@ -1165,8 +1230,8 @@ private:
         const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
         if (!windowtabs.query_succeeded || windowtabs.running) {
             fatal_error_ = windowtabs.running
-                               ? L"WindowTabs started during the isolated experiment; Phase 3 must roll back."
-                               : L"WindowTabs presence could no longer be checked; Phase 3 must roll back.";
+                               ? L"WindowTabs started during the isolated experiment; Phase 4 must roll back."
+                               : L"WindowTabs presence could no longer be checked; Phase 4 must roll back.";
             return false;
         }
         return true;
@@ -1283,12 +1348,12 @@ private:
 
         ManageableScan scan = ScanManageableChromeWindows(logger_);
         if (!scan.succeeded) {
-            fatal_error_ = L"The Phase 3 fallback Chrome scan failed.";
+            fatal_error_ = L"The Phase 4 fallback Chrome scan failed.";
             return false;
         }
         if (scan.windows.size() > 5) {
             fatal_error_ =
-                L"Phase 3 supports at most 5 manageable Chrome windows; the new window remains visible on the taskbar.";
+                L"Phase 4 supports at most 5 manageable Chrome windows; the new window remains visible on the taskbar.";
             return false;
         }
 
@@ -1365,6 +1430,14 @@ private:
                     participants.message;
                 return false;
             }
+            std::wstring group_write_error;
+            if (!group_recovery_journal_.EnsureMembers(
+                    current_identities, &group_write_error)) {
+                fatal_error_ =
+                    L"Persisting changed Chrome membership failed before layout mutation: " +
+                    group_write_error;
+                return false;
+            }
         }
 
         const std::vector<TabGroupCandidate> candidates =
@@ -1375,6 +1448,28 @@ private:
         if (registry_.windows().empty()) {
             model_.SetTabStripHealthy(false);
             tab_strip_.Destroy();
+            std::wstring group_write_error;
+            if (!group_recovery_journal_.MarkTabStripCreated(
+                    false, &group_write_error)) {
+                fatal_error_ =
+                    L"Persisting tab-strip closure after all Chrome windows closed failed: " +
+                    group_write_error;
+                return false;
+            }
+            std::vector<WindowIdentity> removed_identities;
+            removed_identities.reserve(registry_report.removed.size());
+            for (const ChromeWindowSnapshot& removed :
+                 registry_report.removed) {
+                removed_identities.push_back(MakeIdentity(removed));
+            }
+            if (!removed_identities.empty() &&
+                !group_recovery_journal_.MarkTabsCreated(
+                    removed_identities, false, &group_write_error)) {
+                fatal_error_ =
+                    L"Persisting tab closure after all Chrome windows closed failed: " +
+                    group_write_error;
+                return false;
+            }
             geometry_ = {};
             identities_.clear();
             active_identity_ = {};
@@ -1422,6 +1517,14 @@ private:
                     std::to_wstring(strip_error) + L'.';
                 return false;
             }
+            std::wstring group_write_error;
+            if (!group_recovery_journal_.MarkTabStripCreated(
+                    true, &group_write_error)) {
+                fatal_error_ =
+                    L"Persisting lifecycle tab-strip creation failed: " +
+                    group_write_error;
+                return false;
+            }
         } else if (membership_changed ||
                    registry_report.updated_title_count != 0) {
             if (!tab_strip_.SetItems(
@@ -1450,6 +1553,28 @@ private:
                 }
             }
         }
+        std::vector<WindowIdentity> added_identities;
+        added_identities.reserve(registry_report.added.size());
+        for (const ChromeWindowSnapshot& added : registry_report.added) {
+            added_identities.push_back(MakeIdentity(added));
+        }
+        std::vector<WindowIdentity> removed_identities;
+        removed_identities.reserve(registry_report.removed.size());
+        for (const ChromeWindowSnapshot& removed : registry_report.removed) {
+            removed_identities.push_back(MakeIdentity(removed));
+        }
+        std::wstring group_write_error;
+        if ((!added_identities.empty() &&
+             !group_recovery_journal_.MarkTabsCreated(
+                 added_identities, true, &group_write_error)) ||
+            (!removed_identities.empty() &&
+             !group_recovery_journal_.MarkTabsCreated(
+                 removed_identities, false, &group_write_error))) {
+            fatal_error_ =
+                L"Persisting lifecycle tab completion failed: " +
+                group_write_error;
+            return false;
+        }
         model_.SetTabStripHealthy(tab_strip_.IsHealthy());
         if (!model_.tab_strip_healthy()) {
             fatal_error_ = L"The lifecycle tab strip is not healthy.";
@@ -1457,6 +1582,13 @@ private:
         }
 
         if (membership_changed) {
+            if (!group_recovery_journal_.PlanLayoutMutation(
+                    current_identities, &group_write_error)) {
+                fatal_error_ =
+                    L"Persisting changed-group layout intent failed; no arrangement was attempted: " +
+                    group_write_error;
+                return false;
+            }
             const WindowCoordinationResult arranged =
                 placement_controller_.Arrange(geometry_, desired_active);
             if (!arranged.succeeded) {
@@ -1535,7 +1667,7 @@ private:
     void HandleCommand(const wchar_t command) {
         WriteLine(
             logger_,
-            L"phase3> " + std::wstring(1, command));
+            L"phase4> " + std::wstring(1, command));
         if (command == L'h' || command == L'?') {
             PrintCommands(logger_, paused_, recovery_required_);
             return;
@@ -1596,18 +1728,71 @@ private:
 
     [[nodiscard]] bool RestoreLayoutWithRetry(
         const std::wstring_view label) {
+        const auto persist_controller_report =
+            [this, label](const WindowGroupRestoreReport& report) {
+                for (const WindowCoordinationResult& operation :
+                     report.operations) {
+                    if (!operation.succeeded) {
+                        continue;
+                    }
+                    std::wstring persistence_error;
+                    if (!group_recovery_journal_.MarkLayoutRestored(
+                            operation.identity, &persistence_error)) {
+                        WriteLine(
+                            logger_,
+                            std::wstring(label) +
+                                L": persisting window-layout completion failed: " +
+                                persistence_error,
+                            true);
+                        return false;
+                    }
+                }
+                return true;
+            };
+        const auto journal_has_pending_layout = [this]() {
+            return std::any_of(
+                group_recovery_journal_.state().members.begin(),
+                group_recovery_journal_.state().members.end(),
+                [](const GroupMemberRecoveryState& member) {
+                    return member.NeedsLayoutRestore();
+                });
+        };
+
         WindowGroupRestoreReport report =
             placement_controller_.RestoreAll();
-        if (report.succeeded && !placement_controller_.needs_restore()) {
-            return true;
+        bool persisted = persist_controller_report(report);
+        if (!report.succeeded || placement_controller_.needs_restore()) {
+            WriteLine(
+                logger_,
+                std::wstring(label) +
+                    L": first window-layout restoration failed; retrying once.",
+                true);
+            report = placement_controller_.RestoreAll();
+            persisted = persist_controller_report(report) && persisted;
         }
-        WriteLine(
-            logger_,
-            std::wstring(label) +
-                L": first window-layout restoration failed; retrying once.",
-            true);
-        report = placement_controller_.RestoreAll();
-        return report.succeeded && !placement_controller_.needs_restore();
+        if (!report.succeeded || placement_controller_.needs_restore()) {
+            return false;
+        }
+        if (!persisted || journal_has_pending_layout()) {
+            Win32GroupRecoveryWindowGateway gateway;
+            const GroupLayoutRecoveryReport persisted_report =
+                RestorePersistedGroupLayouts(
+                    &group_recovery_journal_, &gateway);
+            for (const GroupLayoutRecoveryOperation& operation :
+                 persisted_report.operations) {
+                WriteLine(
+                    logger_,
+                    std::wstring(label) +
+                        L" persisted layout " +
+                        (operation.succeeded ? L"SUCCESS " : L"FAIL ") +
+                        FormatIdentity(operation.identity) + L": " +
+                        operation.message,
+                    !operation.succeeded);
+            }
+            return persisted_report.succeeded &&
+                   !journal_has_pending_layout();
+        }
+        return true;
     }
 
     [[nodiscard]] bool RestoreSession(const std::wstring_view label) {
@@ -1640,6 +1825,17 @@ private:
         for (const WindowIdentity& identity : identities_) {
             static_cast<void>(model_.MarkTabCreated(identity, false));
         }
+        std::wstring clear_error;
+        if (!group_recovery_journal_.Clear(&clear_error)) {
+            recovery_required_ = true;
+            WriteLine(
+                logger_,
+                std::wstring(label) +
+                    L": taskbar and layout were restored and the tab strip was closed, but clearing the V2 recovery journal failed: " +
+                    clear_error + L" Press r to retry cleanup.",
+                true);
+            return false;
+        }
         recovery_required_ = false;
         paused_ = true;
         WriteLine(
@@ -1652,19 +1848,39 @@ private:
     void EmergencyCleanup() noexcept {
         try {
             win_event_monitor_.Stop();
+            bool taskbar_restored = true;
             if (fixed_entry_manager_.removed_window_count() > 0) {
-                static_cast<void>(RestoreTaskbarWithRetry(
-                    L"Scope-exit emergency restoration"));
+                taskbar_restored = RestoreTaskbarWithRetry(
+                    L"Scope-exit emergency restoration");
             }
-            if (placement_controller_.needs_restore()) {
-                static_cast<void>(RestoreLayoutWithRetry(
-                    L"Scope-exit emergency restoration"));
+            bool layout_restored = true;
+            const bool persisted_layout_pending = std::any_of(
+                group_recovery_journal_.state().members.begin(),
+                group_recovery_journal_.state().members.end(),
+                [](const GroupMemberRecoveryState& member) {
+                    return member.NeedsLayoutRestore();
+                });
+            if (placement_controller_.needs_restore() ||
+                persisted_layout_pending) {
+                layout_restored = RestoreLayoutWithRetry(
+                    L"Scope-exit emergency restoration");
             }
-            tab_strip_.Destroy();
+            if (taskbar_restored && layout_restored) {
+                tab_strip_.Destroy();
+                if (group_recovery_journal_.state().HasObligations()) {
+                    std::wstring clear_error;
+                    if (!group_recovery_journal_.Clear(&clear_error) &&
+                        logger_ != nullptr) {
+                        logger_->Error(
+                            L"Scope-exit recovery succeeded, but clearing the V2 recovery journal failed: " +
+                            clear_error);
+                    }
+                }
+            }
         } catch (...) {
             if (logger_ != nullptr) {
                 logger_->Error(
-                    L"The Phase 3 emergency cleanup raised an unexpected exception.");
+                    L"The Phase 4 emergency cleanup raised an unexpected exception.");
             }
         }
     }
@@ -1673,7 +1889,8 @@ private:
     Logger* logger_ = nullptr;
     std::vector<ChromeWindowSnapshot> windows_;
     std::vector<WindowIdentity> identities_;
-    RecoveryJournal recovery_journal_;
+    RecoveryJournal v1_recovery_journal_;
+    GroupRecoveryJournal group_recovery_journal_;
     TabGroupModel model_;
     TabGroupTaskbarReadinessGate readiness_gate_;
     TaskbarController taskbar_controller_;
@@ -1708,16 +1925,19 @@ private:
 [[nodiscard]] int RunV2ExperimentImpl(
     const HINSTANCE instance,
     Logger* const logger,
-    const std::filesystem::path& recovery_journal_path) {
+    const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path) {
     std::wostringstream introduction;
     introduction
-        << L"=== ChromeTaskbarMerger V2 Phase 3 isolated experiment ===\n"
+        << L"=== ChromeTaskbarMerger V2 Phase 4 isolated experiment ===\n"
         << L"This is not the default V1 tray behavior. It creates a minimal native tab strip,\n"
         << L"tracks 1-5 Chrome windows, synchronizes group geometry and display state, and keeps one taskbar entry.\n"
         << L"It never uses SetParent and does not modify Chrome data.";
     if (logger != nullptr && !logger->log_path().empty()) {
         introduction << L"\nLog file: " << logger->log_path().wstring();
     }
+    introduction << L"\nV2 recovery journal: "
+                 << group_recovery_journal_path.wstring();
     WriteLine(logger, introduction.str());
 
     const ProcessPresenceResult windowtabs = QueryWindowTabsPresence();
@@ -1736,6 +1956,17 @@ private:
         return 4;
     }
 
+    const StartupGroupRecoveryResult startup_recovery =
+        RestorePreviousGroupSession(logger, group_recovery_journal_path);
+    if (!startup_recovery.succeeded) {
+        WriteLine(
+            logger,
+            L"Phase 4 startup recovery blocked management: " +
+                startup_recovery.error_message,
+            true);
+        return 5;
+    }
+
     ManageableScan scan = ScanManageableChromeWindows(logger);
     if (!scan.succeeded) {
         return 3;
@@ -1743,7 +1974,7 @@ private:
     if (scan.windows.empty() || scan.windows.size() > 5) {
         WriteLine(
             logger,
-            L"Phase 3 initially requires 1-5 manageable Chrome windows; found " +
+            L"Phase 4 initially requires 1-5 manageable Chrome windows; found " +
                 std::to_wstring(scan.windows.size()) + L'.',
             true);
         return 4;
@@ -1822,17 +2053,18 @@ private:
         instance,
         logger,
         recovery_journal_path,
+        group_recovery_journal_path,
         std::move(scan.windows));
     if (!session.Prepare()) {
         WriteLine(
             logger,
-            L"Phase 3 preparation failed; scope-exit restoration was attempted.",
+            L"Phase 4 preparation failed; scope-exit restoration was attempted.",
             true);
         return 5;
     }
     WriteLine(
         logger,
-        L"Phase 3 is managing: lifecycle events, interactive group geometry, display-state synchronization, native tabs, and the taskbar transaction are active.");
+        L"Phase 4 is managing: persistent group recovery, lifecycle events, geometry, native tabs, and the taskbar transaction are active.");
     return session.Run(input_guard.input());
 }
 
@@ -1841,27 +2073,32 @@ private:
 int RunV2Experiment(
     const HINSTANCE instance,
     Logger* const logger,
-    const std::filesystem::path& recovery_journal_path) {
+    const std::filesystem::path& recovery_journal_path,
+    const std::filesystem::path& group_recovery_journal_path) {
     try {
-        return RunV2ExperimentImpl(instance, logger, recovery_journal_path);
+        return RunV2ExperimentImpl(
+            instance,
+            logger,
+            recovery_journal_path,
+            group_recovery_journal_path);
     } catch (const std::exception& exception) {
         if (logger != nullptr) {
             logger->Error(
-                std::string("Unhandled V2 Phase 3 exception: ") +
+                std::string("Unhandled V2 Phase 4 exception: ") +
                 exception.what());
         }
         WriteLine(
             logger,
-            L"The V2 Phase 3 experiment stopped after an exception; emergency restoration was attempted.",
+            L"The V2 Phase 4 experiment stopped after an exception; emergency restoration was attempted.",
             true);
         return 6;
     } catch (...) {
         if (logger != nullptr) {
-            logger->Error(L"Unhandled unknown V2 Phase 3 exception.");
+            logger->Error(L"Unhandled unknown V2 Phase 4 exception.");
         }
         WriteLine(
             logger,
-            L"The V2 Phase 3 experiment stopped after an unknown exception; emergency restoration was attempted.",
+            L"The V2 Phase 4 experiment stopped after an unknown exception; emergency restoration was attempted.",
             true);
         return 6;
     }
