@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <string_view>
@@ -68,6 +69,20 @@ private:
     window.class_name = L"chrome_widgetwin_1";
     window.title = std::move(title);
     return window;
+}
+
+[[nodiscard]] ctm::WindowIdentity MakeIdentity(
+    const std::uintptr_t handle,
+    const DWORD process_id = 101,
+    const DWORD thread_id = 201,
+    const std::uint64_t creation_time = 301) {
+    return {
+        .hwnd = reinterpret_cast<HWND>(handle),
+        .process_id = process_id,
+        .thread_id = thread_id,
+        .process_creation_time = creation_time,
+        .class_name = L"Chrome_WidgetWin_1",
+    };
 }
 
 void TestVersionedRoundTripAndAtomicPersistence() {
@@ -149,12 +164,75 @@ void TestConservativeMatchingNeverUsesHwndOrAmbiguousRules() {
            "multiple rules targeting one window should all be ignored");
 }
 
+void TestInMemoryNamesFollowCompleteWindowIdentity() {
+    ctm::InMemoryTabNameStore names;
+    const ctm::WindowIdentity work = MakeIdentity(0x101);
+    Expect(names.Set(work, L"工作账户") ==
+               ctm::InMemoryTabNameUpdateResult::Stored,
+           "a Chinese custom name should be stored in memory");
+    Expect(names.size() == 1 &&
+               names.Resolve(work, L"Original title") == L"工作账户",
+           "the in-memory name should override the current Chrome title");
+    Expect(names.Resolve(work, L"Changed page title") == L"工作账户",
+           "Chrome title changes should not overwrite the in-memory name");
+
+    ctm::WindowIdentity reused = work;
+    ++reused.process_creation_time;
+    Expect(!names.Find(reused).has_value() &&
+               names.Resolve(reused, L"New Chrome window") ==
+                   L"New Chrome window",
+           "a reused HWND with a different complete identity must not inherit a name");
+
+    Expect(names.Set(work, L"") ==
+               ctm::InMemoryTabNameUpdateResult::Cleared &&
+               names.size() == 0 &&
+               names.Resolve(work, L"Live title") == L"Live title",
+           "an empty edit should clear the override and restore the live title");
+}
+
+void TestInMemoryNameValidationAndExplicitLifetime() {
+    ctm::InMemoryTabNameStore names;
+    const ctm::WindowIdentity identity = MakeIdentity(0x202);
+    const std::wstring maximum(
+        ctm::kMaximumInMemoryTabNameLength, L'名');
+    const std::wstring too_long(
+        ctm::kMaximumInMemoryTabNameLength + 1U, L'名');
+    Expect(names.Set(identity, maximum) ==
+               ctm::InMemoryTabNameUpdateResult::Stored,
+           "the documented Unicode length limit should be accepted");
+    Expect(names.Set(identity, too_long) ==
+               ctm::InMemoryTabNameUpdateResult::TooLong &&
+               names.Find(identity) == maximum,
+           "an oversized edit should be rejected without replacing the old name");
+    Expect(names.Set(identity, L"line one\nline two") ==
+               ctm::InMemoryTabNameUpdateResult::InvalidText,
+           "multi-line text should be rejected by the single-line name model");
+
+    ctm::WindowIdentity incomplete = identity;
+    incomplete.process_id = 0;
+    Expect(names.Set(incomplete, L"invalid") ==
+               ctm::InMemoryTabNameUpdateResult::InvalidIdentity,
+           "an incomplete identity should never receive an in-memory name");
+    Expect(names.Remove(identity) && names.size() == 0,
+           "a name can be explicitly forgotten when its window identity expires");
+    Expect(!names.Remove(identity),
+           "removing an already absent identity should be idempotent");
+    Expect(names.Set(identity, L"临时") ==
+               ctm::InMemoryTabNameUpdateResult::Stored,
+           "the store should accept another temporary name");
+    names.Clear();
+    Expect(names.size() == 0,
+           "process shutdown can discard every in-memory name without persistence");
+}
+
 }  // namespace
 
 int main() {
     TestVersionedRoundTripAndAtomicPersistence();
     TestInvalidAndDuplicateRulesAreRejectedAsAWhole();
     TestConservativeMatchingNeverUsesHwndOrAmbiguousRules();
+    TestInMemoryNamesFollowCompleteWindowIdentity();
+    TestInMemoryNameValidationAndExplicitLifetime();
 
     if (failures != 0) {
         std::cerr << failures << " tab-name store test(s) failed.\n";

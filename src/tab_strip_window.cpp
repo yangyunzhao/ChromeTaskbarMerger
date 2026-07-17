@@ -1,14 +1,24 @@
 #include "tab_strip_window.h"
 
+#include "tab_name_store.h"
+
+#include <CommCtrl.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <algorithm>
+#include <vector>
 
 namespace ctm {
 namespace {
 
 constexpr wchar_t kTabStripClassName[] =
     L"ChromeTaskbarMerger.V2.TabStrip";
+constexpr UINT kEndNameEditMessage = WM_APP + 0x37;
+constexpr WPARAM kCancelAndReactivate = 0;
+constexpr WPARAM kCommitAndReactivate = 1;
+constexpr WPARAM kCommitWithoutReactivation = 2;
+constexpr UINT_PTR kNameEditorSubclassId = 1;
 
 [[nodiscard]] int RectangleWidth(const RECT& rectangle) noexcept {
     return rectangle.right - rectangle.left;
@@ -16,6 +26,17 @@ constexpr wchar_t kTabStripClassName[] =
 
 [[nodiscard]] int RectangleHeight(const RECT& rectangle) noexcept {
     return rectangle.bottom - rectangle.top;
+}
+
+[[nodiscard]] bool HasActiveImeComposition(const HWND window) noexcept {
+    const HIMC context = ImmGetContext(window);
+    if (context == nullptr) {
+        return false;
+    }
+    const LONG bytes = ImmGetCompositionStringW(
+        context, GCS_COMPSTR, nullptr, 0);
+    ImmReleaseContext(window, context);
+    return bytes > 0;
 }
 
 void AssignError(DWORD* const error_code, const DWORD value) noexcept {
@@ -35,7 +56,7 @@ void AssignError(DWORD* const error_code, const DWORD value) noexcept {
 
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
-    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     window_class.lpfnWndProc = &TabStripWindow::WindowProcedure;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -153,9 +174,23 @@ bool TabStripWindow::SetItems(
         return false;
     }
 
+    if (name_editor_ != nullptr) {
+        const auto edited = std::find_if(
+            validated.begin(),
+            validated.end(),
+            [this](const TabStripItem& item) {
+                return WindowIdentitiesMatch(
+                    item.identity, editing_identity_);
+            });
+        if (edited == validated.end()) {
+            EndNameEdit(false, false);
+        }
+    }
+
     items_ = std::move(validated);
     active_identity_ = active_identity;
     RecalculateLayout();
+    EnsureActiveVisible();
     if (hwnd_ != nullptr) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -174,6 +209,7 @@ bool TabStripWindow::SetActive(const WindowIdentity& identity) noexcept {
         return false;
     }
     active_identity_ = identity;
+    EnsureActiveVisible();
     if (hwnd_ != nullptr) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -238,6 +274,9 @@ bool TabStripWindow::SetVisible(const bool visible,
         AssignError(error_code, ERROR_INVALID_WINDOW_HANDLE);
         return false;
     }
+    if (!visible && name_editor_ != nullptr) {
+        EndNameEdit(true, false);
+    }
     ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     if ((IsWindowVisible(hwnd_) != FALSE) != visible) {
         AssignError(error_code, ERROR_INVALID_STATE);
@@ -248,6 +287,9 @@ bool TabStripWindow::SetVisible(const bool visible,
 }
 
 void TabStripWindow::Destroy() noexcept {
+    if (name_editor_ != nullptr) {
+        EndNameEdit(false, false);
+    }
     if (hwnd_ != nullptr && IsWindow(hwnd_) != FALSE) {
         DestroyWindow(hwnd_);
     }
@@ -258,6 +300,11 @@ void TabStripWindow::Destroy() noexcept {
     active_identity_ = {};
     layout_ = {};
     dpi_ = USER_DEFAULT_SCREEN_DPI;
+    editing_identity_ = {};
+    edit_end_pending_ = false;
+    suppress_click_up_ = false;
+    first_visible_index_ = 0;
+    wheel_delta_remainder_ = 0;
     if (font_ != nullptr) {
         DeleteObject(font_);
         font_ = nullptr;
@@ -305,20 +352,56 @@ LRESULT TabStripWindow::HandleMessage(const UINT message,
         case WM_ERASEBKGND:
             return 1;
         case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;
+            return name_editor_ != nullptr ? MA_ACTIVATE : MA_NOACTIVATE;
         case WM_SIZE:
             RecalculateLayout();
+            EnsureActiveVisible();
             return 0;
         case WM_DPICHANGED:
             dpi_ = LOWORD(wparam);
             UpdateDpiResources();
             RecalculateLayout();
+            EnsureActiveVisible();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         case WM_PAINT:
             Paint();
             return 0;
+        case WM_MOUSEWHEEL:
+            wheel_delta_remainder_ += GET_WHEEL_DELTA_WPARAM(wparam);
+            if (const int steps = wheel_delta_remainder_ / WHEEL_DELTA;
+                steps != 0) {
+                wheel_delta_remainder_ -= steps * WHEEL_DELTA;
+                ScrollByTabs(-steps);
+            }
+            return 0;
+        case WM_MOUSEHWHEEL:
+            wheel_delta_remainder_ += GET_WHEEL_DELTA_WPARAM(wparam);
+            if (const int steps = wheel_delta_remainder_ / WHEEL_DELTA;
+                steps != 0) {
+                wheel_delta_remainder_ -= steps * WHEEL_DELTA;
+                ScrollByTabs(steps);
+            }
+            return 0;
+        case WM_LBUTTONDBLCLK: {
+            const POINT point = {
+                .x = GET_X_LPARAM(lparam),
+                .y = GET_Y_LPARAM(lparam),
+            };
+            const TabHitResult hit = HitTestTabStrip(layout_, point);
+            if (hit.region == TabHitRegion::Body &&
+                hit.index < items_.size() && BeginNameEdit(hit.index)) {
+                suppress_click_up_ = true;
+            } else if (hit.region == TabHitRegion::Close) {
+                suppress_click_up_ = true;
+            }
+            return 0;
+        }
         case WM_LBUTTONUP: {
+            if (suppress_click_up_) {
+                suppress_click_up_ = false;
+                return 0;
+            }
             const POINT point = {
                 .x = GET_X_LPARAM(lparam),
                 .y = GET_Y_LPARAM(lparam),
@@ -336,11 +419,283 @@ LRESULT TabStripWindow::HandleMessage(const UINT message,
             }
             return 0;
         }
+        case kEndNameEditMessage:
+            if (name_editor_ != nullptr) {
+                const bool commit = wparam != kCancelAndReactivate;
+                const bool reactivate =
+                    wparam != kCommitWithoutReactivation;
+                EndNameEdit(commit, reactivate);
+            }
+            return 0;
         case WM_NCDESTROY:
             return DefWindowProcW(hwnd_, message, wparam, lparam);
         default:
             return DefWindowProcW(hwnd_, message, wparam, lparam);
     }
+}
+
+bool TabStripWindow::BeginNameEdit(const std::size_t index) noexcept {
+    if (hwnd_ == nullptr || name_editor_ != nullptr ||
+        index >= items_.size() || index >= layout_.items.size() ||
+        event_sink_ == nullptr) {
+        return false;
+    }
+    RECT bounds = layout_.items[index].bounds;
+    const RECT close = layout_.items[index].close_bounds;
+    const int inset = MulDiv(
+        3, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI);
+    bounds.left += inset;
+    bounds.top += inset;
+    bounds.bottom -= inset;
+    bounds.right = close.right > close.left
+                       ? close.left - inset
+                       : bounds.right - inset;
+    if (bounds.right - bounds.left < MulDiv(
+            24, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI) ||
+        bounds.bottom <= bounds.top) {
+        return false;
+    }
+
+    HWND editor = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        WC_EDITW,
+        items_[index].title.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        bounds.left,
+        bounds.top,
+        bounds.right - bounds.left,
+        bounds.bottom - bounds.top,
+        hwnd_,
+        nullptr,
+        instance_,
+        nullptr);
+    if (editor == nullptr) {
+        return false;
+    }
+    if (SetWindowSubclass(
+            editor,
+            &TabStripWindow::EditWindowProcedure,
+            kNameEditorSubclassId,
+            reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
+        DestroyWindow(editor);
+        return false;
+    }
+
+    name_editor_ = editor;
+    editing_identity_ = items_[index].identity;
+    edit_end_pending_ = false;
+    SendMessageW(
+        name_editor_,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(
+            font_ != nullptr ? font_ : GetStockObject(DEFAULT_GUI_FONT)),
+        TRUE);
+    SendMessageW(
+        name_editor_,
+        EM_SETLIMITTEXT,
+        static_cast<WPARAM>(kMaximumInMemoryTabNameLength),
+        0);
+    SendMessageW(name_editor_, EM_SETSEL, 0, -1);
+    SetEditingActivationMode(true);
+    static_cast<void>(SetForegroundWindow(hwnd_));
+    static_cast<void>(SetActiveWindow(hwnd_));
+    static_cast<void>(SetFocus(name_editor_));
+    return true;
+}
+
+void TabStripWindow::EndNameEdit(const bool commit,
+                                 const bool reactivate) noexcept {
+    if (name_editor_ == nullptr) {
+        return;
+    }
+    std::wstring name;
+    if (commit) {
+        const int length = GetWindowTextLengthW(name_editor_);
+        if (length > 0) {
+            std::vector<wchar_t> buffer(
+                static_cast<std::size_t>(length) + 1U, L'\0');
+            const int copied = GetWindowTextW(
+                name_editor_, buffer.data(), static_cast<int>(buffer.size()));
+            if (copied > 0) {
+                name.assign(buffer.data(), static_cast<std::size_t>(copied));
+            }
+        }
+    }
+    const WindowIdentity identity = editing_identity_;
+    HWND editor = name_editor_;
+    name_editor_ = nullptr;
+    editing_identity_ = {};
+    edit_end_pending_ = false;
+    static_cast<void>(RemoveWindowSubclass(
+        editor,
+        &TabStripWindow::EditWindowProcedure,
+        kNameEditorSubclassId));
+    if (IsWindow(editor) != FALSE) {
+        DestroyWindow(editor);
+    }
+    SetEditingActivationMode(false);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    ITabStripEventSink* const sink = event_sink_;
+    if (commit && sink != nullptr) {
+        sink->OnTabNameChangeRequested(identity, name);
+    }
+    if (reactivate && sink != nullptr) {
+        sink->OnTabActivationRequested(identity);
+    }
+}
+
+void TabStripWindow::RepositionNameEditor() noexcept {
+    if (name_editor_ == nullptr) {
+        return;
+    }
+    const auto edited = std::find_if(
+        items_.begin(),
+        items_.end(),
+        [this](const TabStripItem& item) {
+            return WindowIdentitiesMatch(item.identity, editing_identity_);
+        });
+    if (edited == items_.end()) {
+        EndNameEdit(false, false);
+        return;
+    }
+    const std::size_t index = static_cast<std::size_t>(
+        std::distance(items_.begin(), edited));
+    if (index >= layout_.items.size()) {
+        EndNameEdit(false, false);
+        return;
+    }
+    RECT bounds = layout_.items[index].bounds;
+    const RECT close = layout_.items[index].close_bounds;
+    const int inset = MulDiv(
+        3, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI);
+    bounds.left += inset;
+    bounds.top += inset;
+    bounds.bottom -= inset;
+    bounds.right = close.right > close.left
+                       ? close.left - inset
+                       : bounds.right - inset;
+    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+        EndNameEdit(false, false);
+        return;
+    }
+    static_cast<void>(SetWindowPos(
+        name_editor_,
+        HWND_TOP,
+        bounds.left,
+        bounds.top,
+        bounds.right - bounds.left,
+        bounds.bottom - bounds.top,
+        SWP_NOACTIVATE));
+}
+
+void TabStripWindow::SetEditingActivationMode(
+    const bool editing) noexcept {
+    if (hwnd_ == nullptr || IsWindow(hwnd_) == FALSE) {
+        return;
+    }
+    LONG_PTR extended_style = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+    extended_style = editing
+                         ? extended_style & ~WS_EX_NOACTIVATE
+                         : extended_style | WS_EX_NOACTIVATE;
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, extended_style);
+    static_cast<void>(SetWindowPos(
+        hwnd_,
+        HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED));
+}
+
+void TabStripWindow::ScrollByTabs(const int delta) noexcept {
+    if (!layout_.overflowed || layout_.visible_capacity == 0 ||
+        items_.size() <= layout_.visible_capacity || delta == 0) {
+        return;
+    }
+    const std::size_t maximum_first =
+        items_.size() - layout_.visible_capacity;
+    const long long requested =
+        static_cast<long long>(first_visible_index_) + delta;
+    first_visible_index_ = static_cast<std::size_t>(std::clamp<long long>(
+        requested, 0, static_cast<long long>(maximum_first)));
+    RecalculateLayout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void TabStripWindow::EnsureActiveVisible() noexcept {
+    if (!layout_.overflowed || layout_.visible_capacity == 0) {
+        return;
+    }
+    const auto active = std::find_if(
+        items_.begin(),
+        items_.end(),
+        [this](const TabStripItem& item) {
+            return WindowIdentitiesMatch(item.identity, active_identity_);
+        });
+    if (active == items_.end()) {
+        return;
+    }
+    const std::size_t index = static_cast<std::size_t>(
+        std::distance(items_.begin(), active));
+    std::size_t desired = first_visible_index_;
+    if (index < desired) {
+        desired = index;
+    } else if (index >= desired + layout_.visible_capacity) {
+        desired = index - layout_.visible_capacity + 1U;
+    }
+    if (desired == first_visible_index_) {
+        return;
+    }
+    first_visible_index_ = desired;
+    RecalculateLayout();
+}
+
+LRESULT CALLBACK TabStripWindow::EditWindowProcedure(
+    const HWND window,
+    const UINT message,
+    const WPARAM wparam,
+    const LPARAM lparam,
+    const UINT_PTR subclass_id,
+    const DWORD_PTR reference_data) noexcept {
+    auto* const self = reinterpret_cast<TabStripWindow*>(reference_data);
+    if (self == nullptr || subclass_id != kNameEditorSubclassId) {
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+    if (message == WM_GETDLGCODE) {
+        return DefSubclassProc(window, message, wparam, lparam) |
+               DLGC_WANTALLKEYS;
+    }
+    if (message == WM_KEYDOWN && !self->edit_end_pending_) {
+        if (wparam == VK_RETURN || wparam == VK_ESCAPE) {
+            if (HasActiveImeComposition(window)) {
+                return DefSubclassProc(window, message, wparam, lparam);
+            }
+            self->edit_end_pending_ = true;
+            if (PostMessageW(
+                    self->hwnd_,
+                    kEndNameEditMessage,
+                    wparam == VK_RETURN ? kCommitAndReactivate
+                                        : kCancelAndReactivate,
+                    0) == FALSE) {
+                self->edit_end_pending_ = false;
+                MessageBeep(MB_ICONWARNING);
+            }
+            return 0;
+        }
+    }
+    if (message == WM_KILLFOCUS && !self->edit_end_pending_) {
+        self->edit_end_pending_ = true;
+        if (PostMessageW(
+                self->hwnd_,
+                kEndNameEditMessage,
+                kCommitWithoutReactivation,
+                0) == FALSE) {
+            self->edit_end_pending_ = false;
+        }
+    }
+    return DefSubclassProc(window, message, wparam, lparam);
 }
 
 void TabStripWindow::RecalculateLayout() noexcept {
@@ -357,7 +712,10 @@ void TabStripWindow::RecalculateLayout() noexcept {
          .cy = client.bottom - client.top},
         items_.size(),
         dpi_,
-        maximum_tab_width_pixels_);
+        maximum_tab_width_pixels_,
+        first_visible_index_);
+    first_visible_index_ = layout_.first_visible_index;
+    RepositionNameEditor();
 }
 
 void TabStripWindow::SetMaximumTabWidth(
@@ -365,6 +723,7 @@ void TabStripWindow::SetMaximumTabWidth(
     maximum_tab_width_pixels_ = std::clamp(
         logical_pixels, kMinimumTabWidthPixels, kMaximumTabWidthPixels);
     RecalculateLayout();
+    EnsureActiveVisible();
     if (hwnd_ != nullptr) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -384,6 +743,14 @@ void TabStripWindow::UpdateDpiResources() noexcept {
             0,
             dpi_) != FALSE) {
         font_ = CreateFontIndirectW(&metrics.lfMessageFont);
+    }
+    if (name_editor_ != nullptr) {
+        SendMessageW(
+            name_editor_,
+            WM_SETFONT,
+            reinterpret_cast<WPARAM>(
+                font_ != nullptr ? font_ : GetStockObject(DEFAULT_GUI_FONT)),
+            TRUE);
     }
 }
 
@@ -407,6 +774,17 @@ void TabStripWindow::Paint() noexcept {
             device,
             font_ != nullptr ? static_cast<HGDIOBJ>(font_)
                              : GetStockObject(DEFAULT_GUI_FONT));
+
+    const int saved_device = SaveDC(device);
+    if (layout_.viewport_bounds.right > layout_.viewport_bounds.left &&
+        layout_.viewport_bounds.bottom > layout_.viewport_bounds.top) {
+        IntersectClipRect(
+            device,
+            layout_.viewport_bounds.left,
+            layout_.viewport_bounds.top,
+            layout_.viewport_bounds.right,
+            layout_.viewport_bounds.bottom);
+    }
 
     for (std::size_t index = 0;
          index < items_.size() && index < layout_.items.size();
@@ -454,6 +832,41 @@ void TabStripWindow::Paint() noexcept {
                 L"\u00D7",
                 1,
                 &close_bounds,
+                DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        }
+    }
+
+    if (saved_device != 0) {
+        RestoreDC(device, saved_device);
+    }
+
+    if (layout_.overflowed && layout_.visible_capacity != 0) {
+        const int indicator_width = MulDiv(
+            16, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI);
+        SetTextColor(device, RGB(245, 247, 250));
+        if (layout_.first_visible_index > 0) {
+            RECT left_indicator = layout_.viewport_bounds;
+            left_indicator.right = std::min(
+                left_indicator.right,
+                left_indicator.left + indicator_width);
+            DrawTextW(
+                device,
+                L"\u2039",
+                1,
+                &left_indicator,
+                DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        }
+        if (layout_.first_visible_index + layout_.visible_capacity <
+            items_.size()) {
+            RECT right_indicator = layout_.viewport_bounds;
+            right_indicator.left = std::max(
+                right_indicator.left,
+                right_indicator.right - indicator_width);
+            DrawTextW(
+                device,
+                L"\u203A",
+                1,
+                &right_indicator,
                 DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
         }
     }

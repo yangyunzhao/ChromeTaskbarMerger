@@ -878,6 +878,11 @@ void TestTaskbarRecreationForgetsShellStateAndReapplies() {
                !store.saved_states.empty() &&
                store.saved_states.back().empty(),
            "TaskbarCreated should leave no obsolete recovery entries");
+    const std::size_t writes_after_reset = store.saved_states.size();
+    Expect(manager.ResetAfterTaskbarRecreation(&reset_error) &&
+               manager.removed_window_count() == 0 &&
+               store.saved_states.size() == writes_after_reset,
+           "duplicate TaskbarCreated delivery should be idempotent before reapplication");
 
     const ctm::FixedEntryReport reapplied =
         manager.Synchronize(windows, TestHandle(3));

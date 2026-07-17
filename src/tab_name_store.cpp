@@ -130,6 +130,84 @@ constexpr std::size_t kMaximumRules = 256;
 
 }  // namespace
 
+InMemoryTabNameUpdateResult InMemoryTabNameStore::Set(
+    const WindowIdentity& identity,
+    const std::wstring_view name) {
+    if (!WindowIdentityIsComplete(identity)) {
+        return InMemoryTabNameUpdateResult::InvalidIdentity;
+    }
+    if (name.size() > kMaximumInMemoryTabNameLength) {
+        return InMemoryTabNameUpdateResult::TooLong;
+    }
+    if (name.find_first_of(L"\r\n") != std::wstring_view::npos) {
+        return InMemoryTabNameUpdateResult::InvalidText;
+    }
+
+    const auto existing = std::find_if(
+        entries_.begin(),
+        entries_.end(),
+        [&identity](const Entry& entry) {
+            return WindowIdentitiesMatch(entry.identity, identity);
+        });
+    if (name.empty()) {
+        if (existing != entries_.end()) {
+            entries_.erase(existing);
+        }
+        return InMemoryTabNameUpdateResult::Cleared;
+    }
+    if (existing != entries_.end()) {
+        existing->name.assign(name);
+    } else {
+        entries_.push_back({
+            .identity = identity,
+            .name = std::wstring(name),
+        });
+    }
+    return InMemoryTabNameUpdateResult::Stored;
+}
+
+std::optional<std::wstring> InMemoryTabNameStore::Find(
+    const WindowIdentity& identity) const {
+    if (!WindowIdentityIsComplete(identity)) {
+        return std::nullopt;
+    }
+    const auto match = std::find_if(
+        entries_.begin(),
+        entries_.end(),
+        [&identity](const Entry& entry) {
+            return WindowIdentitiesMatch(entry.identity, identity);
+        });
+    return match == entries_.end()
+               ? std::nullopt
+               : std::optional<std::wstring>(match->name);
+}
+
+std::wstring InMemoryTabNameStore::Resolve(
+    const WindowIdentity& identity,
+    const std::wstring_view fallback) const {
+    const std::optional<std::wstring> custom = Find(identity);
+    return custom.has_value() ? *custom : std::wstring(fallback);
+}
+
+bool InMemoryTabNameStore::Remove(
+    const WindowIdentity& identity) noexcept {
+    const auto existing = std::find_if(
+        entries_.begin(),
+        entries_.end(),
+        [&identity](const Entry& entry) {
+            return WindowIdentitiesMatch(entry.identity, identity);
+        });
+    if (existing == entries_.end()) {
+        return false;
+    }
+    entries_.erase(existing);
+    return true;
+}
+
+void InMemoryTabNameStore::Clear() noexcept {
+    entries_.clear();
+}
+
 std::string SerializeTabNameRules(
     const std::span<const TabNameRule> rules) {
     if (rules.size() > kMaximumRules) {

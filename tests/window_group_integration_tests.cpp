@@ -63,6 +63,14 @@ void Expect(const bool condition, const std::string_view description) {
     return false;
 }
 
+void PumpPostedMessages() {
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+}
+
 LRESULT CALLBACK TestWindowProcedure(const HWND window,
                                      const UINT message,
                                      const WPARAM wparam,
@@ -169,11 +177,22 @@ public:
         last_close_identity = identity;
     }
 
+    void OnTabNameChangeRequested(
+        const ctm::WindowIdentity& identity,
+        const std::wstring_view name) override {
+        ++name_change_requests;
+        last_name_identity = identity;
+        last_name.assign(name);
+    }
+
     int activation_requests = 0;
     int close_requests = 0;
+    int name_change_requests = 0;
     bool owner_updated = false;
     bool active_updated = false;
     ctm::WindowIdentity last_close_identity;
+    ctm::WindowIdentity last_name_identity;
+    std::wstring last_name;
     ctm::TabActivationReport last_activation;
 
 private:
@@ -507,6 +526,56 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
                    "the close hit region should report only its exact identity");
             Expect(IsWindow(identities[2].hwnd) != FALSE,
                    "the strip should delegate closing to its lifecycle event sink");
+
+            const RECT& first_bounds = layout.items[0].bounds;
+            const LPARAM first_point = MAKELPARAM(
+                first_bounds.left + 8,
+                first_bounds.top +
+                    (first_bounds.bottom - first_bounds.top) / 2);
+            SendMessageW(strip.hwnd(), WM_LBUTTONDBLCLK, 0, first_point);
+            SendMessageW(strip.hwnd(), WM_LBUTTONUP, 0, first_point);
+            HWND editor = FindWindowExW(
+                strip.hwnd(), nullptr, L"Edit", nullptr);
+            Expect(editor != nullptr,
+                   "double-clicking a built-in tab body should open a native Unicode editor");
+            if (editor != nullptr) {
+                SetWindowTextW(editor, L"工作账户");
+                SendMessageW(editor, WM_KEYDOWN, VK_RETURN, 0);
+                PumpPostedMessages();
+                Expect(sink.name_change_requests == 1 &&
+                           sink.last_name == L"工作账户" &&
+                           ctm::WindowIdentitiesMatch(
+                               sink.last_name_identity, identities[0]),
+                       "Enter should submit a Chinese name for the exact built-in tab identity");
+                Expect(FindWindowExW(
+                           strip.hwnd(), nullptr, L"Edit", nullptr) == nullptr,
+                       "the inline editor should close after Enter");
+            }
+
+            SendMessageW(strip.hwnd(), WM_LBUTTONDBLCLK, 0, first_point);
+            SendMessageW(strip.hwnd(), WM_LBUTTONUP, 0, first_point);
+            editor = FindWindowExW(strip.hwnd(), nullptr, L"Edit", nullptr);
+            Expect(editor != nullptr,
+                   "a built-in tab should remain editable after one committed rename");
+            if (editor != nullptr) {
+                SetWindowTextW(editor, L"不应保存");
+                SendMessageW(editor, WM_KEYDOWN, VK_ESCAPE, 0);
+                PumpPostedMessages();
+                Expect(sink.name_change_requests == 1,
+                       "Escape should cancel an inline name edit without a callback");
+            }
+
+            SendMessageW(strip.hwnd(), WM_LBUTTONDBLCLK, 0, first_point);
+            SendMessageW(strip.hwnd(), WM_LBUTTONUP, 0, first_point);
+            editor = FindWindowExW(strip.hwnd(), nullptr, L"Edit", nullptr);
+            if (editor != nullptr) {
+                SetWindowTextW(editor, L"");
+                SendMessageW(editor, WM_KEYDOWN, VK_RETURN, 0);
+                PumpPostedMessages();
+                Expect(sink.name_change_requests == 2 &&
+                           sink.last_name.empty(),
+                       "submitting an empty name should request restoration of the live title");
+            }
         }
 
         const RECT moved_content = {

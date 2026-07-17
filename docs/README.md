@@ -10,8 +10,8 @@
 | --- | --- | --- |
 | [Codex 开发与验收规范](CODEX_DEVELOPMENT_GUIDE.md) | 规定 Codex 在各版本中的开发、自动验收、人工验收、记录和 Git 行为 | 生效 |
 | [V1 需求与设计](V1_REQUIREMENTS.md) | 记录任务栏单入口版本的范围、技术决策、阶段结果和正式版基线 | `1.0.0` 已发布 |
-| [V2 需求与设计](V2_REQUIREMENTS.md) | 设计默认不依赖 WindowTabs 的内置窗口标签组，也允许选择 WindowTabs 标签，并保留 V1 任务栏能力 | Phase 0～5 已通过；Phase 6～7 计划中 |
-| [便携版说明](PORTABLE_README.md) | 随 Release 便携包分发的简要使用与恢复说明 | `1.0.0` |
+| [V2 需求与设计](V2_REQUIREMENTS.md) | 设计默认不依赖 WindowTabs 的内置窗口标签组，也允许选择 WindowTabs 标签，并保留 V1 任务栏能力 | Phase 0～6 已通过；Phase 7 计划中 |
+| [便携版说明](PORTABLE_README.md) | 随便携包分发的简要使用与恢复说明 | V2 Phase 6 验收通过版 |
 
 ## 测试证据
 

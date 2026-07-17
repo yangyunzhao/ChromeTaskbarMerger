@@ -151,6 +151,52 @@ void TestIdentityReplacementAndDestroyHintResetSameIdentity() {
            "a post-destroy HWND reuse must receive fresh registry state");
 }
 
+void TestManagedWindowLimitRetainsTheExistingGroup() {
+    const std::vector candidates = {
+        MakeSnapshot(1, L"One"),
+        MakeSnapshot(2, L"Two"),
+        MakeSnapshot(3, L"Three"),
+        MakeSnapshot(4, L"Four"),
+        MakeSnapshot(5, L"Five"),
+        MakeSnapshot(6, L"Six"),
+    };
+    const std::vector current(
+        candidates.begin(), candidates.begin() + 5);
+    const ctm::ManagedChromeWindowSelection full =
+        ctm::SelectManagedChromeWindows(
+            candidates, current, TestHandle(6), 5);
+    Expect(full.selected.size() == 5 && full.overflow.size() == 1,
+           "a sixth Chrome window should be isolated without dropping the five-member group");
+    if (full.selected.size() == 5 && full.overflow.size() == 1) {
+        for (std::size_t index = 0; index < full.selected.size(); ++index) {
+            Expect(full.selected[index].hwnd == current[index].hwnd,
+                   "the existing group order should remain stable at the management limit");
+        }
+        Expect(full.overflow.front().hwnd == TestHandle(6),
+               "the new foreground overflow window should keep its independent taskbar entry");
+    }
+
+    const std::vector partial(
+        candidates.begin(), candidates.begin() + 3);
+    const ctm::ManagedChromeWindowSelection filled =
+        ctm::SelectManagedChromeWindows(
+            candidates, partial, TestHandle(6), 5);
+    Expect(filled.selected.size() == 5 && filled.overflow.size() == 1 &&
+               filled.selected[0].hwnd == TestHandle(1) &&
+               filled.selected[1].hwnd == TestHandle(2) &&
+               filled.selected[2].hwnd == TestHandle(3) &&
+               filled.selected[3].hwnd == TestHandle(6) &&
+               filled.selected[4].hwnd == TestHandle(4) &&
+               filled.overflow[0].hwnd == TestHandle(5),
+           "free slots should retain current members, then prefer a new foreground window deterministically");
+
+    const ctm::ManagedChromeWindowSelection none =
+        ctm::SelectManagedChromeWindows(candidates, {}, nullptr, 0);
+    Expect(none.selected.empty() &&
+               none.overflow.size() == candidates.size(),
+           "a zero limit should safely leave every candidate unmanaged");
+}
+
 [[nodiscard]] LRESULT CALLBACK TestWindowProcedure(
     const HWND window,
     const UINT message,
@@ -245,6 +291,7 @@ int main() {
     TestCreateCloseReopenAndActiveFallback();
     TestTitleStormAndNoChangeAreIdempotent();
     TestIdentityReplacementAndDestroyHintResetSameIdentity();
+    TestManagedWindowLimitRetainsTheExistingGroup();
     TestTemporaryTopLevelTitleDestroyAndMainThreadSerialization();
 
     if (failures != 0) {

@@ -73,27 +73,50 @@ void TestThreeTabsAreOrderedAndSeparated() {
            "the gap between tabs should not activate either neighbor");
 }
 
-void TestFiveNarrowTabsRemainHittable() {
-    const ctm::TabStripLayout layout =
+void TestFiveNarrowTabsUseScrollableOverflow() {
+    const ctm::TabStripLayout first =
         ctm::CalculateTabStripLayout({.cx = 260, .cy = 38}, 5);
-    Expect(layout.items.size() == 5,
-           "five members should fit in the supported narrow strip");
-    for (std::size_t index = 0; index < layout.items.size(); ++index) {
-        const ctm::TabLayoutItem& item = layout.items[index];
+    Expect(first.items.size() == 5 && first.overflowed &&
+               first.first_visible_index == 0 &&
+               first.visible_capacity == 3,
+           "five members in a narrow strip should expose a three-tab viewport");
+    for (std::size_t index = 0; index < first.visible_capacity; ++index) {
+        const ctm::TabLayoutItem& item = first.items[index];
         const ctm::TabHitResult title =
-            ctm::HitTestTabStrip(layout, {
+            ctm::HitTestTabStrip(first, {
                                             .x = item.bounds.left + 2,
                                             .y = Center(item.bounds).y,
                                         });
         Expect(title.region == ctm::TabHitRegion::Body &&
                    title.index == index,
-               "every narrow tab should retain a body hit target");
+               "every initially visible overflow tab should retain a body hit target");
         const ctm::TabHitResult close =
-            ctm::HitTestTabStrip(layout, Center(item.close_bounds));
+            ctm::HitTestTabStrip(first, Center(item.close_bounds));
         Expect(close.region == ctm::TabHitRegion::Close &&
                    close.index == index,
-               "every supported narrow tab should retain its close region");
+               "every initially visible overflow tab should retain its close region");
     }
+    Expect(ctm::HitTestTabStrip(
+               first, Center(first.items[3].bounds)).region ==
+               ctm::TabHitRegion::None,
+           "an item outside the first overflow viewport must not be clickable");
+
+    const ctm::TabStripLayout last = ctm::CalculateTabStripLayout(
+        {.cx = 260, .cy = 38}, 5, 96, 240, 2);
+    Expect(last.overflowed && last.first_visible_index == 2 &&
+               last.visible_capacity == 3,
+           "scrolling should reveal the final three tabs without changing capacity");
+    for (std::size_t index = 2; index < 5; ++index) {
+        const ctm::TabHitResult title = ctm::HitTestTabStrip(
+            last, Center(last.items[index].bounds));
+        Expect(title.region == ctm::TabHitRegion::Body &&
+                   title.index == index,
+               "every final overflow tab should become clickable after scrolling");
+    }
+    Expect(ctm::HitTestTabStrip(
+               last, Center(last.items[1].bounds)).region ==
+               ctm::TabHitRegion::None,
+           "a tab before the scrolled viewport must not remain clickable");
 }
 
 void TestInvalidAndOutsideGeometryIsRejected() {
@@ -154,15 +177,30 @@ void TestConfiguredTabWidthAndStripAlignment() {
            "alignment should not change the configured strip height");
 }
 
+void TestRelativeKeyboardNavigationWraps() {
+    Expect(ctm::CalculateRelativeTabIndex(0, 3, 1) == 1 &&
+               ctm::CalculateRelativeTabIndex(1, 3, 1) == 2 &&
+               ctm::CalculateRelativeTabIndex(2, 3, 1) == 0,
+           "forward keyboard navigation should wrap after the final tab");
+    Expect(ctm::CalculateRelativeTabIndex(2, 3, -1) == 1 &&
+               ctm::CalculateRelativeTabIndex(1, 3, -1) == 0 &&
+               ctm::CalculateRelativeTabIndex(0, 3, -1) == 2,
+           "backward keyboard navigation should wrap before the first tab");
+    Expect(ctm::CalculateRelativeTabIndex(8, 3, 0) == 2 &&
+               ctm::CalculateRelativeTabIndex(0, 0, 1) == 0,
+           "keyboard navigation should handle stale and empty indices safely");
+}
+
 }  // namespace
 
 int main() {
     TestOneTabBodyAndCloseHit();
     TestThreeTabsAreOrderedAndSeparated();
-    TestFiveNarrowTabsRemainHittable();
+    TestFiveNarrowTabsUseScrollableOverflow();
     TestInvalidAndOutsideGeometryIsRejected();
     TestDpiScaledLayout();
     TestConfiguredTabWidthAndStripAlignment();
+    TestRelativeKeyboardNavigationWraps();
 
     if (failures != 0) {
         std::cerr << failures << " tab-strip layout test(s) failed.\n";

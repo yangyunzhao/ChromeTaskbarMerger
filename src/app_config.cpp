@@ -525,6 +525,11 @@ std::string_view TabProviderConfigValue(
     return "builtin";
 }
 
+bool TabProviderSupportsInMemoryNameEditing(
+    const TabProvider provider) noexcept {
+    return provider == TabProvider::BuiltIn;
+}
+
 std::wstring_view TabProviderDisplayName(
     const TabProvider provider) noexcept {
     switch (provider) {

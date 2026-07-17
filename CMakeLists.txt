@@ -139,7 +139,7 @@ target_include_directories(
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 ctm_enable_warnings(ctm_core)
-target_link_libraries(ctm_core PUBLIC Advapi32 Dwmapi Ole32)
+target_link_libraries(ctm_core PUBLIC Advapi32 Comctl32 Dwmapi Imm32 Ole32)
 
 add_executable(
     ChromeTaskbarMerger

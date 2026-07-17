@@ -391,6 +391,14 @@ bool FixedEntryManager::AdoptRecoveryStates(
 
 bool FixedEntryManager::ResetAfterTaskbarRecreation(
     std::wstring* const error_message) {
+    main_entry_.reset();
+    last_window_count_ = 0;
+    if (removed_windows_.empty()) {
+        if (error_message != nullptr) {
+            error_message->clear();
+        }
+        return true;
+    }
     if (readiness_gate_ != nullptr) {
         for (const TaskbarMutationState& state : removed_windows_) {
             readiness_gate_->RecoveryIntentCleared(state.identity);

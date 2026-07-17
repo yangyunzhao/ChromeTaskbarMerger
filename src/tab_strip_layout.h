@@ -24,7 +24,11 @@ struct TabLayoutItem {
 
 struct TabStripLayout {
     SIZE client_size{};
+    RECT viewport_bounds{};
     std::vector<TabLayoutItem> items;
+    bool overflowed = false;
+    std::size_t first_visible_index = 0;
+    std::size_t visible_capacity = 0;
 };
 
 struct TabHitResult {
@@ -36,7 +40,8 @@ struct TabHitResult {
     SIZE client_size,
     std::size_t tab_count,
     UINT dpi = USER_DEFAULT_SCREEN_DPI,
-    int maximum_tab_width_pixels = 240);
+    int maximum_tab_width_pixels = 240,
+    std::size_t first_visible_index = 0);
 [[nodiscard]] RECT CalculateConfiguredTabStripBounds(
     const RECT& group_bounds,
     int tab_strip_height,
@@ -45,5 +50,9 @@ struct TabHitResult {
 [[nodiscard]] TabHitResult HitTestTabStrip(
     const TabStripLayout& layout,
     POINT point) noexcept;
+[[nodiscard]] std::size_t CalculateRelativeTabIndex(
+    std::size_t current_index,
+    std::size_t tab_count,
+    int direction) noexcept;
 
 }  // namespace ctm

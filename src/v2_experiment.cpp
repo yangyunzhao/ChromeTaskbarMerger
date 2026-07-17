@@ -55,6 +55,7 @@ constexpr std::chrono::milliseconds kV2FallbackScan{2000};
 constexpr std::chrono::milliseconds kV2TransientWindowRetry{250};
 constexpr std::chrono::milliseconds kV2GeometryDebounce{16};
 constexpr std::chrono::milliseconds kV2GeometryMaximumDelay{32};
+constexpr std::size_t kMaximumManagedChromeWindows = 5;
 
 enum class GroupViewState {
     Normal,
@@ -427,11 +428,13 @@ public:
         std::filesystem::path group_recovery_path,
         std::vector<ChromeWindowSnapshot> windows,
         AppConfig config = {},
-        std::vector<TabNameRule> tab_name_rules = {})
+        std::vector<TabNameRule> tab_name_rules = {},
+        InMemoryTabNameStore* in_memory_tab_names = nullptr)
         : instance_(instance),
           logger_(logger),
           config_(config),
           tab_name_rules_(std::move(tab_name_rules)),
+          in_memory_tab_names_(in_memory_tab_names),
           windows_(std::move(windows)),
           v1_recovery_journal_(std::move(v1_recovery_path)),
           group_recovery_journal_(std::move(group_recovery_path)),
@@ -546,7 +549,7 @@ public:
         candidates.reserve(windows_.size());
         strip_items.reserve(windows_.size());
         const std::vector<std::wstring> display_names =
-            ResolveTabDisplayNames(tab_name_rules_, windows_);
+            ResolveDisplayNames(windows_);
         for (std::size_t index = 0; index < windows_.size(); ++index) {
             const ChromeWindowSnapshot& snapshot = windows_[index];
             const WindowIdentity identity = MakeIdentity(snapshot);
@@ -900,6 +903,100 @@ public:
         return synchronized;
     }
 
+    [[nodiscard]] bool HandleTaskbarRecreated() {
+        if (!managing_ || recovery_required_) {
+            return false;
+        }
+        std::wstring reset_error;
+        if (!fixed_entry_manager_.ResetAfterTaskbarRecreation(
+                &reset_error)) {
+            fatal_error_ =
+                L"TaskbarCreated could not clear obsolete Shell recovery state: " +
+                reset_error;
+            return false;
+        }
+        taskbar_controller_.Shutdown();
+        const TaskbarOperationResult initialized =
+            taskbar_controller_.InitializeTaskbarList();
+        if (!initialized.succeeded) {
+            fatal_error_ =
+                L"TaskbarCreated could not initialize the replacement taskbar COM object: " +
+                initialized.message;
+            return false;
+        }
+        const bool synchronized =
+            SynchronizeLifecycle(LifecycleSyncReason::FallbackScan);
+        if (!synchronized) {
+            if (fatal_error_.empty()) {
+                fatal_error_ =
+                    L"TaskbarCreated could not rebuild the built-in managed state.";
+            }
+            return false;
+        }
+        lifecycle_schedule_.MarkSynchronized(
+            LifecycleSyncSchedule::Clock::now());
+        WriteLine(
+            logger_,
+            L"TASKBAR_CREATED_REBUILT tray=external taskbar_com=ready tabs=" +
+                std::to_wstring(registry_.windows().size()));
+        return true;
+    }
+
+    [[nodiscard]] bool ActivateRelativeTab(const int direction) {
+        if (!managing_ || recovery_required_ || direction == 0 ||
+            registry_.windows().empty()) {
+            return false;
+        }
+        const std::optional<WindowIdentity> active =
+            registry_.active_identity().has_value()
+                ? registry_.active_identity()
+                : std::optional<WindowIdentity>(active_identity_);
+        if (!active.has_value()) {
+            return false;
+        }
+        const auto current = std::find_if(
+            registry_.windows().begin(),
+            registry_.windows().end(),
+            [&active](const ChromeWindowSnapshot& snapshot) {
+                return WindowIdentitiesMatch(
+                    MakeIdentity(snapshot), *active);
+            });
+        if (current == registry_.windows().end()) {
+            return false;
+        }
+        const std::size_t index = static_cast<std::size_t>(std::distance(
+            registry_.windows().begin(), current));
+        const std::size_t next = CalculateRelativeTabIndex(
+            index, registry_.windows().size(), direction);
+        const WindowIdentity target = MakeIdentity(
+            registry_.windows()[next]);
+        OnTabActivationRequested(target);
+        return fatal_error_.empty();
+    }
+
+    [[nodiscard]] bool RequestDisplayEnvironmentSynchronization(
+        const std::wstring_view reason) {
+        if (!managing_ || recovery_required_ ||
+            !registry_.active_identity().has_value()) {
+            return false;
+        }
+        const WindowIdentity active = *registry_.active_identity();
+        const auto now = LifecycleSyncSchedule::Clock::now();
+        lifecycle_schedule_.RecordEvent(
+            {.kind = ChromeWindowEventKind::NameChanged,
+             .hwnd = active.hwnd},
+            now);
+        geometry_schedule_.RecordEvent(
+            {.kind = ChromeWindowEventKind::LocationChanged,
+             .hwnd = active.hwnd},
+            now);
+        WriteLine(
+            logger_,
+            L"DISPLAY_ENVIRONMENT_SYNC_SCHEDULED reason=" +
+                std::wstring(reason));
+        return true;
+    }
+
     [[nodiscard]] bool managing() const noexcept {
         return managing_;
     }
@@ -910,6 +1007,10 @@ public:
 
     [[nodiscard]] std::size_t window_count() const noexcept {
         return registry_.windows().size();
+    }
+
+    [[nodiscard]] std::size_t ignored_window_count() const noexcept {
+        return ignored_window_count_;
     }
 
     [[nodiscard]] const std::wstring& last_runtime_error() const noexcept {
@@ -966,6 +1067,61 @@ public:
             {.kind = ChromeWindowEventKind::NameChanged,
              .hwnd = identity.hwnd},
             LifecycleSyncSchedule::Clock::now());
+    }
+
+    void OnTabNameChangeRequested(
+        const WindowIdentity& identity,
+        const std::wstring_view name) override {
+        if (!managing_ || recovery_required_ ||
+            in_memory_tab_names_ == nullptr) {
+            return;
+        }
+        const WindowIdentityQueryResult current =
+            QueryWindowIdentity(identity.hwnd);
+        if (!current.succeeded ||
+            !WindowIdentitiesMatch(identity, current.identity) ||
+            !RegistryContainsHandle(identity.hwnd)) {
+            lifecycle_schedule_.RecordEvent(
+                {.kind = ChromeWindowEventKind::Destroyed,
+                 .hwnd = identity.hwnd},
+                LifecycleSyncSchedule::Clock::now());
+            return;
+        }
+        const InMemoryTabNameUpdateResult updated =
+            in_memory_tab_names_->Set(identity, name);
+        if (updated != InMemoryTabNameUpdateResult::Stored &&
+            updated != InMemoryTabNameUpdateResult::Cleared) {
+            WriteLine(
+                logger_,
+                L"TAB_NAME_MEMORY_REJECTED " + FormatIdentity(identity),
+                true);
+            return;
+        }
+        const std::optional<WindowIdentity> active =
+            registry_.active_identity();
+        if (!active.has_value()) {
+            fatal_error_ =
+                L"The in-memory tab-name update found no active Chrome identity.";
+            return;
+        }
+        const std::vector<TabGroupCandidate> candidates =
+            MakeRegistryCandidates();
+        static_cast<void>(model_.Synchronize(candidates, active));
+        const std::vector<TabStripItem> items = MakeRegistryStripItems();
+        DWORD strip_error = ERROR_SUCCESS;
+        if (!tab_strip_.SetItems(items, *active, &strip_error)) {
+            fatal_error_ =
+                L"Refreshing the in-memory tab name failed with Win32 error " +
+                std::to_wstring(strip_error) + L'.';
+            return;
+        }
+        WriteLine(
+            logger_,
+            std::wstring(updated == InMemoryTabNameUpdateResult::Stored
+                             ? L"TAB_NAME_MEMORY_SET "
+                             : L"TAB_NAME_MEMORY_CLEARED ") +
+                FormatIdentity(identity) + L" length=" +
+                std::to_wstring(name.size()));
     }
 
 private:
@@ -1372,13 +1528,26 @@ private:
         return true;
     }
 
+    [[nodiscard]] std::vector<std::wstring> ResolveDisplayNames(
+        const std::span<const ChromeWindowSnapshot> windows) const {
+        std::vector<std::wstring> names =
+            ResolveTabDisplayNames(tab_name_rules_, windows);
+        if (in_memory_tab_names_ == nullptr) {
+            return names;
+        }
+        for (std::size_t index = 0; index < windows.size(); ++index) {
+            names[index] = in_memory_tab_names_->Resolve(
+                MakeIdentity(windows[index]), names[index]);
+        }
+        return names;
+    }
+
     [[nodiscard]] std::vector<TabGroupCandidate>
     MakeRegistryCandidates() const {
         std::vector<TabGroupCandidate> candidates;
         candidates.reserve(registry_.windows().size());
         const std::vector<std::wstring> display_names =
-            ResolveTabDisplayNames(
-                tab_name_rules_, registry_.windows());
+            ResolveDisplayNames(registry_.windows());
         for (std::size_t index = 0;
              index < registry_.windows().size();
              ++index) {
@@ -1396,8 +1565,7 @@ private:
         std::vector<TabStripItem> items;
         items.reserve(registry_.windows().size());
         const std::vector<std::wstring> display_names =
-            ResolveTabDisplayNames(
-                tab_name_rules_, registry_.windows());
+            ResolveDisplayNames(registry_.windows());
         for (std::size_t index = 0;
              index < registry_.windows().size();
              ++index) {
@@ -1501,10 +1669,30 @@ private:
             fatal_error_ = L"The Phase 4 fallback Chrome scan failed.";
             return false;
         }
-        if (scan.windows.size() > 5) {
-            fatal_error_ =
-                L"Phase 4 supports at most 5 manageable Chrome windows; the new window remains visible on the taskbar.";
-            return false;
+        if (scan.windows.size() > kMaximumManagedChromeWindows) {
+            ManagedChromeWindowSelection selection =
+                SelectManagedChromeWindows(
+                    scan.windows,
+                    registry_.windows(),
+                    GetForegroundWindow(),
+                    kMaximumManagedChromeWindows);
+            const std::size_t previous_ignored = ignored_window_count_;
+            ignored_window_count_ = selection.overflow.size();
+            if (previous_ignored != ignored_window_count_) {
+                WriteLine(
+                    logger_,
+                    L"WINDOW_LIMIT managed=" +
+                        std::to_wstring(selection.selected.size()) +
+                        L" ignored=" +
+                        std::to_wstring(selection.overflow.size()) +
+                        L"; existing managed identities stay grouped and overflow windows keep their own taskbar entries.");
+            }
+            scan.windows = std::move(selection.selected);
+        } else if (ignored_window_count_ != 0) {
+            ignored_window_count_ = 0;
+            WriteLine(
+                logger_,
+                L"WINDOW_LIMIT_CLEARED all manageable Chrome windows are within the supported range.");
         }
 
         const auto unavailable = std::find_if(
@@ -2039,6 +2227,8 @@ private:
     Logger* logger_ = nullptr;
     AppConfig config_;
     std::vector<TabNameRule> tab_name_rules_;
+    InMemoryTabNameStore* in_memory_tab_names_ = nullptr;
+    std::size_t ignored_window_count_ = 0;
     std::vector<ChromeWindowSnapshot> windows_;
     std::vector<WindowIdentity> identities_;
     RecoveryJournal v1_recovery_journal_;
@@ -2090,6 +2280,8 @@ constexpr UINT kV2MenuAbout = 207;
 constexpr UINT kV2MenuExit = 208;
 constexpr UINT kV2MenuProviderBuiltIn = 209;
 constexpr UINT kV2MenuProviderWindowTabs = 210;
+constexpr int kV2HotKeyPreviousTab = 301;
+constexpr int kV2HotKeyNextTab = 302;
 constexpr UINT kV2ManagedTimerMilliseconds = 16;
 constexpr UINT kV2IdleTimerMilliseconds = 500;
 constexpr wchar_t kV2ProjectUrl[] =
@@ -2195,6 +2387,12 @@ private:
         }
         class_registered_ = true;
         taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
+        if (taskbar_created_message_ == 0) {
+            LogError(
+                L"RegisterWindowMessageW(TaskbarCreated) failed with Win32 error " +
+                std::to_wstring(GetLastError()) + L'.');
+            return false;
+        }
         window_ = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             kTrayWindowClassName,
@@ -2255,6 +2453,7 @@ private:
     }
 
     void CleanupShell() noexcept {
+        SetHotKeysEnabled(false);
         if (window_ != nullptr) {
             KillTimer(window_, kV2TrayTimerId);
         }
@@ -2356,16 +2555,16 @@ private:
             }
             return true;
         }
-        if (scan.windows.size() > 5) {
+        if (scan.windows.size() > kMaximumManagedChromeWindows) {
             if (state_.preparing()) {
                 state_.PreparationCompleted(false, true);
             } else {
                 state_.OperationFailed(true);
             }
-            LogError(L"Built-in Phase 5 currently supports at most five Chrome windows.");
+            LogError(L"Built-in Phase 6 currently supports at most five Chrome windows.");
             ShowNotification(
                 L"窗口数量超出当前范围",
-                L"Phase 5 最多管理 5 个 Chrome 窗口，任务栏保持可见。",
+                L"Phase 6 最多管理 5 个 Chrome 窗口；请关闭多余窗口后恢复管理。",
                 NIIF_WARNING);
             UpdateStatus();
             return false;
@@ -2399,7 +2598,8 @@ private:
             group_recovery_path_,
             std::move(scan.windows),
             config_,
-            tab_name_rules_);
+            tab_name_rules_,
+            &in_memory_tab_names_);
         if (!candidate->Prepare()) {
             candidate.reset();
             const bool restored = RecoveryJournalIsClear();
@@ -2420,6 +2620,7 @@ private:
         }
         session_ = std::move(candidate);
         last_window_count_ = session_->window_count();
+        last_ignored_window_count_ = session_->ignored_window_count();
         if (state_.preparing()) {
             state_.PreparationCompleted(true);
         }
@@ -2482,8 +2683,21 @@ private:
             return;
         }
         const std::size_t previous_count = last_window_count_;
+        const std::size_t previous_ignored = last_ignored_window_count_;
         const V2ManagedPumpResult pumped = session_->PumpManagedWork();
         last_window_count_ = session_->window_count();
+        last_ignored_window_count_ = session_->ignored_window_count();
+        if (pumped == V2ManagedPumpResult::Active &&
+            previous_ignored != last_ignored_window_count_) {
+            ShowNotification(
+                last_ignored_window_count_ == 0
+                    ? L"窗口数量已回到支持范围"
+                    : L"额外 Chrome 窗口保持独立",
+                last_ignored_window_count_ == 0
+                    ? L"未管理窗口已加入内置组。"
+                    : L"内置组继续管理原有 5 个窗口；多余窗口保留自己的任务栏入口。",
+                last_ignored_window_count_ == 0 ? NIIF_INFO : NIIF_WARNING);
+        }
         if (pumped == V2ManagedPumpResult::SafelyStopped) {
             const std::wstring error = session_->last_runtime_error();
             session_.reset();
@@ -2501,7 +2715,8 @@ private:
                 NIIF_ERROR);
         }
         if (pumped != V2ManagedPumpResult::Active ||
-            previous_count != last_window_count_) {
+            previous_count != last_window_count_ ||
+            previous_ignored != last_ignored_window_count_) {
             UpdateStatus();
         }
     }
@@ -2718,12 +2933,22 @@ private:
     }
 
     [[nodiscard]] std::wstring BuildTooltip() const {
-        return L"ChromeTaskbarMerger - " +
-               std::wstring(StateDisplayName()) + L" - 内置标签 (Chrome " +
-               std::to_wstring(last_window_count_) + L")";
+        std::wstring tooltip =
+            L"ChromeTaskbarMerger - " + std::wstring(StateDisplayName()) +
+            L" - 内置标签 (Chrome " +
+            std::to_wstring(last_window_count_);
+        if (last_ignored_window_count_ != 0) {
+            tooltip += L" + 独立 " +
+                       std::to_wstring(last_ignored_window_count_);
+        }
+        return tooltip + L")";
     }
 
     void UpdateStatus() {
+        if (session_ == nullptr) {
+            last_ignored_window_count_ = 0;
+        }
+        SetHotKeysEnabled(session_ != nullptr && state_.managing());
         UpdateTimer();
         if (!tray_icon_added_ || window_ == nullptr) {
             return;
@@ -2736,6 +2961,53 @@ private:
         const std::wstring tooltip = BuildTooltip();
         wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
         static_cast<void>(Shell_NotifyIconW(NIM_MODIFY, &data));
+    }
+
+    void SetHotKeysEnabled(const bool enabled) noexcept {
+        if (window_ == nullptr) {
+            hotkeys_registered_ = false;
+            return;
+        }
+        if (!enabled) {
+            if (hotkeys_registered_) {
+                UnregisterHotKey(window_, kV2HotKeyPreviousTab);
+                UnregisterHotKey(window_, kV2HotKeyNextTab);
+                hotkeys_registered_ = false;
+            }
+            return;
+        }
+        if (hotkeys_registered_) {
+            return;
+        }
+        const UINT modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
+        const bool previous = RegisterHotKey(
+                                  window_,
+                                  kV2HotKeyPreviousTab,
+                                  modifiers,
+                                  VK_PRIOR) != FALSE;
+        const DWORD previous_error = previous ? ERROR_SUCCESS : GetLastError();
+        const bool next = RegisterHotKey(
+                              window_,
+                              kV2HotKeyNextTab,
+                              modifiers,
+                              VK_NEXT) != FALSE;
+        const DWORD next_error = next ? ERROR_SUCCESS : GetLastError();
+        if (previous && next) {
+            hotkeys_registered_ = true;
+            LogInfo(
+                L"Built-in tab hotkeys registered: Ctrl+Alt+PageUp/PageDown.");
+            return;
+        }
+        if (previous) {
+            UnregisterHotKey(window_, kV2HotKeyPreviousTab);
+        }
+        if (next) {
+            UnregisterHotKey(window_, kV2HotKeyNextTab);
+        }
+        LogError(
+            L"Built-in tab hotkeys are unavailable; previous_error=" +
+            std::to_wstring(previous_error) + L" next_error=" +
+            std::to_wstring(next_error) + L'.');
     }
 
     void UpdateTimer() {
@@ -2796,6 +3068,16 @@ private:
             menu, MF_STRING | MF_DISABLED, kV2MenuStatus, status.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kV2MenuScanNow, L"立即重新扫描");
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_DISABLED,
+            0,
+            L"快捷切换：Ctrl+Alt+PageUp / PageDown");
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_DISABLED,
+            0,
+            L"双击内置标签可临时修改名称");
         AppendMenuW(
             menu,
             MF_STRING | (state_.can_pause() ? MF_ENABLED : MF_GRAYED),
@@ -2948,13 +3230,17 @@ private:
     LRESULT HandleMessage(const UINT message,
                           const WPARAM wparam,
                           const LPARAM lparam) {
-        if (message == taskbar_created_message_) {
+        if (taskbar_created_message_ != 0 &&
+            message == taskbar_created_message_) {
             tray_icon_added_ = false;
-            static_cast<void>(AddTrayIcon());
+            const bool tray_rebuilt = AddTrayIcon();
             if (session_ != nullptr) {
-                static_cast<void>(
-                    session_->RequestImmediateSynchronization());
+                static_cast<void>(session_->HandleTaskbarRecreated());
             }
+            LogInfo(
+                tray_rebuilt
+                    ? L"TaskbarCreated rebuilt the built-in tray icon and scheduled managed Shell state reconstruction."
+                    : L"TaskbarCreated could not rebuild the built-in tray icon; managed Shell reconstruction was still attempted.");
             return 0;
         }
         switch (message) {
@@ -2963,6 +3249,38 @@ private:
                     HandleTimer();
                 }
                 return 0;
+            case WM_HOTKEY:
+                if (session_ != nullptr &&
+                    (wparam == kV2HotKeyPreviousTab ||
+                     wparam == kV2HotKeyNextTab)) {
+                    static_cast<void>(session_->ActivateRelativeTab(
+                        wparam == kV2HotKeyNextTab ? 1 : -1));
+                }
+                return 0;
+            case WM_DISPLAYCHANGE:
+                if (session_ != nullptr) {
+                    static_cast<void>(
+                        session_->RequestDisplayEnvironmentSynchronization(
+                            L"WM_DISPLAYCHANGE"));
+                }
+                return 0;
+            case WM_SETTINGCHANGE:
+                if (session_ != nullptr &&
+                    wparam == SPI_SETWORKAREA) {
+                    static_cast<void>(
+                        session_->RequestDisplayEnvironmentSynchronization(
+                            L"SPI_SETWORKAREA"));
+                }
+                return 0;
+            case WM_POWERBROADCAST:
+                if (session_ != nullptr &&
+                    (wparam == PBT_APMRESUMEAUTOMATIC ||
+                     wparam == PBT_APMRESUMESUSPEND)) {
+                    static_cast<void>(
+                        session_->RequestDisplayEnvironmentSynchronization(
+                            L"POWER_RESUME"));
+                }
+                return TRUE;
             case kExternalCommandMessage:
                 if (wparam == static_cast<WPARAM>(
                                   ExistingInstanceCommand::RestoreAll)) {
@@ -3052,12 +3370,15 @@ private:
     HICON small_icon_ = nullptr;
     bool class_registered_ = false;
     bool tray_icon_added_ = false;
+    bool hotkeys_registered_ = false;
     std::size_t last_window_count_ = 0;
+    std::size_t last_ignored_window_count_ = 0;
     ULONGLONG next_environment_check_ = 0;
     ULONGLONG next_group_scan_ = 0;
     AutoStartRegistry auto_start_registry_;
     ManagementStateMachine state_;
     std::vector<TabNameRule> tab_name_rules_;
+    InMemoryTabNameStore in_memory_tab_names_;
     std::unique_ptr<V2ExperimentSession> session_;
 };
 

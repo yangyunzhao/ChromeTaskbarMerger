@@ -151,6 +151,15 @@ void TestMissingConfigurationUsesDefaults() {
            "a missing configuration should use safe built-in layout defaults");
 }
 
+void TestOnlyBuiltInProviderSupportsNameEditing() {
+    Expect(ctm::TabProviderSupportsInMemoryNameEditing(
+               ctm::TabProvider::BuiltIn),
+           "the built-in provider should expose in-memory name editing");
+    Expect(!ctm::TabProviderSupportsInMemoryNameEditing(
+               ctm::TabProvider::WindowTabs),
+           "the WindowTabs provider must not expose unsupported name editing");
+}
+
 void TestValidConfigurationLoadsScanInterval() {
     TemporaryDirectory directory;
     if (!directory.created()) {
@@ -575,6 +584,7 @@ void TestTrayInstanceCommandsCanBeSentSynchronouslyAndAsynchronously() {
 
 int main() {
     TestMissingConfigurationUsesDefaults();
+    TestOnlyBuiltInProviderSupportsNameEditing();
     TestValidConfigurationLoadsScanInterval();
     TestInvalidConfigurationFallsBackSafely();
     TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration();

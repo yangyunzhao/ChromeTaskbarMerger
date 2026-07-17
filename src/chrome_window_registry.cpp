@@ -28,6 +28,74 @@ namespace {
 
 }  // namespace
 
+ManagedChromeWindowSelection SelectManagedChromeWindows(
+    const std::span<const ChromeWindowSnapshot> candidates,
+    const std::span<const ChromeWindowSnapshot> currently_managed,
+    const HWND foreground_window,
+    const std::size_t maximum_count) {
+    ManagedChromeWindowSelection result;
+    result.selected.reserve(std::min(candidates.size(), maximum_count));
+    result.overflow.reserve(
+        candidates.size() > maximum_count
+            ? candidates.size() - maximum_count
+            : 0);
+
+    const auto already_selected = [&result](
+                                      const ChromeWindowSnapshot& snapshot) {
+        return std::any_of(
+            result.selected.begin(),
+            result.selected.end(),
+            [&snapshot](const ChromeWindowSnapshot& selected) {
+                return WindowIdentitiesMatch(
+                    MakeWindowIdentity(selected),
+                    MakeWindowIdentity(snapshot));
+            });
+    };
+    const auto append = [&result, &already_selected, maximum_count](
+                            const ChromeWindowSnapshot& snapshot) {
+        if (result.selected.size() >= maximum_count ||
+            !WindowIdentityIsComplete(MakeWindowIdentity(snapshot)) ||
+            already_selected(snapshot)) {
+            return;
+        }
+        result.selected.push_back(snapshot);
+    };
+
+    for (const ChromeWindowSnapshot& existing : currently_managed) {
+        const auto retained = std::find_if(
+            candidates.begin(),
+            candidates.end(),
+            [&existing](const ChromeWindowSnapshot& candidate) {
+                return WindowIdentitiesMatch(
+                    MakeWindowIdentity(existing),
+                    MakeWindowIdentity(candidate));
+            });
+        if (retained != candidates.end()) {
+            append(*retained);
+        }
+    }
+    if (foreground_window != nullptr) {
+        const auto foreground = std::find_if(
+            candidates.begin(),
+            candidates.end(),
+            [foreground_window](const ChromeWindowSnapshot& candidate) {
+                return candidate.hwnd == foreground_window;
+            });
+        if (foreground != candidates.end()) {
+            append(*foreground);
+        }
+    }
+    for (const ChromeWindowSnapshot& candidate : candidates) {
+        append(candidate);
+    }
+    for (const ChromeWindowSnapshot& candidate : candidates) {
+        if (!already_selected(candidate)) {
+            result.overflow.push_back(candidate);
+        }
+    }
+    return result;
+}
+
 WindowIdentity MakeWindowIdentity(const ChromeWindowSnapshot& snapshot) {
     return {
         .hwnd = snapshot.hwnd,

@@ -7,6 +7,7 @@
 
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ctm {
@@ -24,6 +25,9 @@ public:
         const WindowIdentity& identity) = 0;
     virtual void OnTabCloseRequested(
         const WindowIdentity& identity) = 0;
+    virtual void OnTabNameChangeRequested(
+        const WindowIdentity& identity,
+        std::wstring_view name) = 0;
 };
 
 class TabStripWindow final {
@@ -79,9 +83,23 @@ private:
         UINT message,
         WPARAM wparam,
         LPARAM lparam) noexcept;
+    [[nodiscard]] bool BeginNameEdit(std::size_t index) noexcept;
+    void EndNameEdit(bool commit, bool reactivate) noexcept;
+    void RepositionNameEditor() noexcept;
+    void SetEditingActivationMode(bool editing) noexcept;
+    void ScrollByTabs(int delta) noexcept;
+    void EnsureActiveVisible() noexcept;
     void RecalculateLayout() noexcept;
     void UpdateDpiResources() noexcept;
     void Paint() noexcept;
+
+    static LRESULT CALLBACK EditWindowProcedure(
+        HWND window,
+        UINT message,
+        WPARAM wparam,
+        LPARAM lparam,
+        UINT_PTR subclass_id,
+        DWORD_PTR reference_data) noexcept;
 
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -92,6 +110,12 @@ private:
     UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     int maximum_tab_width_pixels_ = kDefaultTabWidthPixels;
     HFONT font_ = nullptr;
+    HWND name_editor_ = nullptr;
+    WindowIdentity editing_identity_;
+    bool edit_end_pending_ = false;
+    bool suppress_click_up_ = false;
+    std::size_t first_visible_index_ = 0;
+    int wheel_delta_remainder_ = 0;
 };
 
 }  // namespace ctm

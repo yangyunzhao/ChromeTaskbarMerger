@@ -71,6 +71,8 @@ struct AppConfigSaveResult {
 
 [[nodiscard]] std::string_view TabProviderConfigValue(
     TabProvider provider) noexcept;
+[[nodiscard]] bool TabProviderSupportsInMemoryNameEditing(
+    TabProvider provider) noexcept;
 [[nodiscard]] std::wstring_view TabProviderDisplayName(
     TabProvider provider) noexcept;
 

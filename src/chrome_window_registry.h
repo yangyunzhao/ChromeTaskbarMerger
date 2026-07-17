@@ -35,6 +35,17 @@ struct ChromeWindowRegistryReport {
     }
 };
 
+struct ManagedChromeWindowSelection {
+    std::vector<ChromeWindowSnapshot> selected;
+    std::vector<ChromeWindowSnapshot> overflow;
+};
+
+[[nodiscard]] ManagedChromeWindowSelection SelectManagedChromeWindows(
+    std::span<const ChromeWindowSnapshot> candidates,
+    std::span<const ChromeWindowSnapshot> currently_managed,
+    HWND foreground_window,
+    std::size_t maximum_count);
+
 class ChromeWindowRegistry final {
 public:
     ChromeWindowRegistry() noexcept;

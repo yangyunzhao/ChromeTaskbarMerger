@@ -1,4 +1,4 @@
-# ChromeTaskbarMerger V2 Phase 5 开发便携版（x64）
+# ChromeTaskbarMerger V2 开发便携版（x64）
 
 ## 使用前提
 
@@ -41,6 +41,16 @@ start_with_windows=false
 
 `tab_provider` 只接受 `builtin` 或 `windowtabs`。`builtin` 是默认值，使用本程序自研标签和窗口组；`windowtabs` 不创建内置标签或重排 Chrome，由 WindowTabs 提供标签，本程序只负责任务栏单入口。托盘选择或直接编辑后，都必须完全退出并重新启动才能切换模式。
 
+仅在 `builtin` 模式下，可以双击内置标签主体输入临时名称，支持中文及其他 Unicode 字符；
+`Enter` 保存、`Esc` 取消，清空后确认可恢复 Chrome 实时标题。已保存名称只在当前
+ChromeTaskbarMerger 进程中有效：网页标题变化和暂停/恢复不会覆盖，彻底退出程序后清空。
+`windowtabs` 模式没有内置标签，也不提供或保存此名称编辑功能。
+
+内置标签发生溢出时可在标签栏上滚动鼠标滚轮浏览；管理期间可用
+`Ctrl+Alt+PageUp/PageDown` 循环切换前后标签，暂停管理后本程序会注销这组快捷键。
+内置组最多管理 5 个 Chrome 主窗口；运行中出现第 6 个时，原有组保持不变，额外窗口保留独立
+任务栏入口并显示通知。若程序启动前已经有 6 个或更多窗口，会安全暂停并要求先关闭多余窗口。
+
 两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制 Chrome 扫描，`windowtabs_check_interval_ms` 仅在选择 WindowTabs 时控制等待检测。内置标签栏支持 `left/center/right` 对齐、25～100 的总宽度百分比以及 80～400 逻辑像素的单标签最大宽度。非法值会回退安全默认值并记录警告。
 
 `start_with_windows` 接受 `true` 或 `false`，默认关闭。托盘修改会原子保存并同步当前用户 Run 项；直接编辑文件后必须从托盘彻底退出并重新运行。手工改为 `true` 后需要手动重新运行一次，程序才能创建当前用户的 Windows 启动项。
@@ -58,7 +68,7 @@ start_with_windows=false
 %LOCALAPPDATA%\ChromeTaskbarMerger\tab-names-v1.tsv
 ```
 
-每次移除按钮或修改内置组布局前，程序都会先原子写入恢复记录。恢复时会核对 HWND、PID、TID、进程创建时间、窗口类和原显示环境，拒绝把陈旧记录用于其他窗口。当前 `tab-names-v1.tsv` 仅是内部安全持久化原型，没有用户编辑入口，也不代表能够识别 Chrome profile。Phase 6 计划提供双击标签输入中文名称、仅在本程序当前进程内有效的编辑功能；Phase 7 编码前再评估能否可靠关联 Chrome profile，经用户确认后才考虑持久化。
+每次移除按钮或修改内置组布局前，程序都会先原子写入恢复记录。恢复时会核对 HWND、PID、TID、进程创建时间、窗口类和原显示环境，拒绝把陈旧记录用于其他窗口。当前 `tab-names-v1.tsv` 仅是内部安全持久化原型，不代表能够识别 Chrome profile；Phase 6 的交互式自定义名称只保存在内存，不会写入或修改该文件。Phase 7 编码前再评估能否可靠关联 Chrome profile，经用户确认后才考虑持久化。
 
 如果程序被强制结束，重新启动 EXE；它会先恢复仍能精确识别的上次状态，再继续管理。
 
