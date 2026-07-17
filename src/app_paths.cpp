@@ -99,4 +99,18 @@ std::filesystem::path GetTabNameRulesPath(
            L"ChromeTaskbarMerger" / L"tab-names-v1.tsv";
 }
 
+std::filesystem::path GetProfileTabNamesPath(
+    std::wstring* const error_message) {
+    const std::wstring local_app_data =
+        ReadEnvironmentVariable(L"LOCALAPPDATA");
+    if (local_app_data.empty()) {
+        if (error_message != nullptr) {
+            *error_message = L"LOCALAPPDATA is not available.";
+        }
+        return {};
+    }
+    return std::filesystem::path(local_app_data) /
+           L"ChromeTaskbarMerger" / L"profile-tab-names-v1.tsv";
+}
+
 }  // namespace ctm

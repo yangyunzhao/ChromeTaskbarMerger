@@ -15,5 +15,7 @@ namespace ctm {
     std::wstring* error_message);
 [[nodiscard]] std::filesystem::path GetTabNameRulesPath(
     std::wstring* error_message);
+[[nodiscard]] std::filesystem::path GetProfileTabNamesPath(
+    std::wstring* error_message);
 
 }  // namespace ctm

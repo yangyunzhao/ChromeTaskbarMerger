@@ -10,8 +10,10 @@
 | --- | --- | --- |
 | [Codex 开发与验收规范](CODEX_DEVELOPMENT_GUIDE.md) | 规定 Codex 在各版本中的开发、自动验收、人工验收、记录和 Git 行为 | 生效 |
 | [V1 需求与设计](V1_REQUIREMENTS.md) | 记录任务栏单入口版本的范围、技术决策、阶段结果和正式版基线 | `1.0.0` 已发布 |
-| [V2 需求与设计](V2_REQUIREMENTS.md) | 设计默认不依赖 WindowTabs 的内置窗口标签组，也允许选择 WindowTabs 标签，并保留 V1 任务栏能力 | Phase 0～6 已通过；Phase 7 计划中 |
-| [便携版说明](PORTABLE_README.md) | 随便携包分发的简要使用与恢复说明 | V2 Phase 6 验收通过版 |
+| [V2 需求与设计](V2_REQUIREMENTS.md) | 默认不依赖 WindowTabs 的内置窗口标签组，也允许选择 WindowTabs 标签，并保留 V1 任务栏能力 | `2.0.0` 全部自动与必要人工验收通过，已批准正式发布 |
+| [Chrome profile 名称持久化评估](V2_PROFILE_NAME_PERSISTENCE.md) | 记录有限可靠的 HWND/profile 映射、隐私边界、严格回退和验收证据 | 自动与必要人工验收通过 |
+| [V3 需求候选与技术待办](V3_BACKLOG.md) | 登记从 V2 延后的非关键视觉与后续研究项 | 最大化按钮图标专项已登记 |
+| [便携版说明](PORTABLE_README.md) | 随便携包分发的简要使用与恢复说明 | `2.0.0` 正式便携版 |
 
 ## 测试证据
 

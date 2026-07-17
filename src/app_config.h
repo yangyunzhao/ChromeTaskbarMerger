@@ -41,6 +41,7 @@ struct AppConfig {
         kDefaultWindowTabsCheckInterval;
     bool start_with_windows = false;
     TabProvider tab_provider = TabProvider::BuiltIn;
+    bool persist_tab_names_by_profile = false;
     TabStripAlignment tab_strip_alignment = TabStripAlignment::Center;
     int tab_strip_width_percent = kDefaultTabStripWidthPercent;
     int tab_width_pixels = kDefaultTabWidthPixels;
@@ -68,6 +69,10 @@ struct AppConfigSaveResult {
 [[nodiscard]] AppConfigSaveResult SaveTabProviderSetting(
     const std::filesystem::path& path,
     TabProvider provider);
+
+[[nodiscard]] AppConfigSaveResult SaveProfileTabNamePersistenceSetting(
+    const std::filesystem::path& path,
+    bool enabled);
 
 [[nodiscard]] std::string_view TabProviderConfigValue(
     TabProvider provider) noexcept;

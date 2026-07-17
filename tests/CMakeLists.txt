@@ -240,3 +240,20 @@ add_test(
     NAME v2_tab_name_store
     COMMAND ChromeTaskbarMergerTabNameStoreTests
 )
+
+add_executable(
+    ChromeTaskbarMergerChromeProfileResolverTests
+    chrome_profile_resolver_tests.cpp
+)
+
+target_link_libraries(
+    ChromeTaskbarMergerChromeProfileResolverTests
+    PRIVATE
+        ctm_core
+)
+ctm_enable_warnings(ChromeTaskbarMergerChromeProfileResolverTests)
+
+add_test(
+    NAME v2_chrome_profile_resolver
+    COMMAND ChromeTaskbarMergerChromeProfileResolverTests
+)

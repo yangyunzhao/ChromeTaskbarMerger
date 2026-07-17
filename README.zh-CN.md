@@ -5,7 +5,7 @@
 <h1 align="center">ChromeTaskbarMerger</h1>
 
 <p align="center">
-  在多个 Chrome 窗口保持打开的同时，让 Windows 任务栏只保留一个固定的 Chrome 入口。
+  将多个 Chrome 窗口组成原生标签组，同时让 Windows 任务栏只保留一个 Chrome 入口。
 </p>
 
 <p align="center">
@@ -22,112 +22,106 @@
 
 ## 项目简介
 
-ChromeTaskbarMerger 是一个轻量级 Windows 原生工具，面向同时使用多个 Chrome 窗口和 WindowTabs 的用户。它不会关闭 Chrome 窗口或更改 Chrome 配置文件，而是在任务栏上保留一个固定的 Chrome 按钮。
+ChromeTaskbarMerger 是一款面向多 Chrome 窗口用户的轻量级 Windows 原生工具。V2
+新增自研标签栏和同步窗口组，默认不再依赖 WindowTabs，同时完整保留 V1 已实现的任务栏
+单入口能力。
 
-程序常驻通知区域，持续处理 Chrome 窗口的新建和关闭；暂停或退出时恢复任务栏按钮；异常结束后通过持久恢复记录修复上次状态。
-
-> [!IMPORTANT]
-> 启用管理时必须保持 WindowTabs 运行。被任务栏合并的 Chrome 窗口也可能不会出现在 Alt+Tab 中，因此本版本以 WindowTabs 作为到达所有窗口的受支持方式。
+程序常驻通知区域，不向 Chrome 注入代码，不开启远程调试，不关闭浏览器窗口，也不修改
+Chrome 数据。
 
 ## 主要功能
 
-- 随 Chrome 窗口变化，将任务栏稳定收敛到零个或一个 Chrome 入口。
-- 保留全部 Chrome 窗口和浏览器数据。
-- Release 版本不显示控制台，常驻 Windows 通知区域。
-- 提供立即扫描、暂停、恢复管理、恢复全部、打开日志、关于和安全退出。
-- Windows 资源管理器重启后重新注册托盘图标并应用规则。
-- 确保同一时间只有一套管理实例运行。
-- 支持可配置的低频扫描，不使用忙循环。
-- 支持当前用户登录 Windows 时自动启动，可从托盘或便携 INI 配置。
-- WindowTabs 不可用时持续等待，并在其启动或重启后自动恢复管理。
-- 每次移除任务栏按钮前先写入恢复意图。
-- 恢复前验证 HWND、PID、TID、进程创建时间和窗口类。
-- 提供独立的 `--restore-all` 恢复命令。
-- 提供静态链接 MSVC 运行库的 x64 便携版。
-
-## 工作原理
-
-1. 枚举系统顶层窗口，通过完整可执行文件路径和 `Chrome_WidgetWin_*` 类识别 Chrome。
-2. 首次启动时保留前台 Chrome 窗口，否则选择一个稳定的后备入口。
-3. 对其他可管理 Chrome 窗口调用 `ITaskbarList::DeleteTab`。
-4. 跟踪窗口生命周期，在配置的扫描周期后重新收敛为一个入口。
-5. 暂停、显式恢复或正常退出时，使用 `ITaskbarList::AddTab` 恢复已跟踪按钮。
-
-程序不会注入代码、关闭窗口、编辑 Chrome 首选项或修改 Chrome 配置文件数据。
-
-## 运行要求
-
-- Windows 11 x64。
-- Google Chrome。
-- WindowTabs 能够到达要管理的 Chrome 窗口；它可以晚于本程序启动，但进入管理后必须保持运行。
-- 构建要求：CMake 3.24 或更高版本，以及包含“使用 C++ 的桌面开发”组件的 Visual Studio 2022 或更高版本。
+- 将 1～5 个普通 Chrome 窗口组成带原生外部标签栏的窗口组；
+- 统一切换、移动、缩放、最小化、恢复、最大化和 Snap；
+- 管理期间让 Windows 任务栏只保留一个 Chrome 入口；
+- 跟踪 Chrome 窗口的新建和关闭，并安全填充空闲组位置；
+- 默认使用内置标签，也可与 WindowTabs 标签严格二选一；
+- 支持标签栏左/中/右对齐、总宽度比例、单标签宽度、滚轮溢出和键盘循环切换；
+- 双击内置标签可输入中文及其他 Unicode 自定义名称；
+- 可选按唯一验证的本地 Chrome profile 恢复自定义名称；
+- 提供扫描、暂停/恢复、恢复全部、日志、关于、登录启动和安全退出；
+- Explorer 重启或进程异常结束后可恢复任务栏与窗口布局；
+- 单实例运行，提供静态链接 MSVC 运行库的 x64 便携 GUI。
 
 ## 快速开始
 
 下载
-[`ChromeTaskbarMerger-1.0.0-portable-x64.zip`](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/download/v1.0.0/ChromeTaskbarMerger-1.0.0-portable-x64.zip)，
+[`ChromeTaskbarMerger-2.0.0-portable-x64.zip`](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/download/v2.0.0/ChromeTaskbarMerger-2.0.0-portable-x64.zip)，
 解压到任意可写目录后运行 `ChromeTaskbarMerger.exe`，无需安装或管理员权限。
 
-如需从源码生成相同的便携包：
+默认选择内置标签，不需要 WindowTabs。首次建立内置组时，请保留 1～5 个处于普通、非最小化
+状态的 Chrome 窗口。
 
-```powershell
-git clone https://github.com/yangyunzhao/ChromeTaskbarMerger.git
-cd ChromeTaskbarMerger
-.\scripts\build-portable.ps1
-```
+## 工作原理
 
-然后运行本地构建：
+1. 通过完整可执行文件路径、进程身份和 `Chrome_WidgetWin_*` 窗口类识别 Chrome；
+2. 内置模式创建独立的原生标签栏，并在不使用 `SetParent` 的前提下同步成员窗口；
+3. 通过 `ITaskbarList::DeleteTab/AddTab` 保留一个 Chrome 任务栏入口；
+4. 每次修改任务栏或布局前先写入恢复记录；
+5. 暂停、恢复全部、正常退出或下次启动时，只恢复完整身份仍匹配的窗口。
 
-```powershell
-.\dist\ChromeTaskbarMerger\ChromeTaskbarMerger.exe
-```
-
-程序会出现在 Windows 通知区域。再次启动 EXE 不会创建第二套管理逻辑，而是通知已有实例立即扫描。
+被管理的非入口窗口可能不会出现在 Alt+Tab 中；内置标签栏是到达全部成员的受支持方式。
+选择 WindowTabs 模式时，由 WindowTabs 提供标签和窗口组，本程序只管理任务栏入口；两种
+方式不会同时管理标签。
 
 ## 托盘菜单
 
 | 操作 | 行为 |
 | --- | --- |
-| 立即重新扫描 | 暂停时只读枚举 Chrome，管理中执行同步，等待时立即检查 WindowTabs。 |
-| 暂停管理 | 恢复已跟踪按钮或取消依赖等待，并记录为明确的用户暂停。 |
-| 恢复管理 | 重新检查前置条件；WindowTabs 已运行时立即管理，否则进入持续等待。 |
-| 恢复全部 Chrome 按钮 | 对已跟踪和当前可识别的 Chrome 窗口执行安全恢复，随后保持暂停。 |
-| 随 Windows 登录自动启动 | 原子更新便携配置和当前用户的 Windows 启动注册项。 |
-| 打开日志目录 | 打开当前用户的日志目录。 |
-| 关于 ChromeTaskbarMerger | 显示版本、开发人员、许可证和可点击的 GitHub 项目链接。 |
-| 退出 | 恢复已跟踪按钮后退出；无法确认恢复时拒绝退出。 |
+| 立即重新扫描 | 立即同步 Chrome 窗口或检查当前标签提供器。 |
+| 暂停/恢复管理 | 恢复当前组，或重新验证并启动所选提供器。 |
+| 恢复全部任务栏和窗口布局 | 执行显式安全恢复，完成后保持暂停。 |
+| 内置标签/WindowTabs 标签 | 二选一，完全重启程序后生效。 |
+| 按 Chrome profile 保存标签名称 | 启用保守的 profile 名称持久化，重启生效。 |
+| 随 Windows 登录自动启动 | 原子更新便携 INI 和当前用户 Run 启动项。 |
+| 打开日志/关于 | 打开诊断目录，或显示版本、开发人员、许可证和项目地址。 |
+| 退出 | 恢复任务栏和布局后安全退出。 |
 
 ## 配置
 
-将 `ChromeTaskbarMerger.ini` 放在 EXE 同一目录：
+`ChromeTaskbarMerger.ini` 必须与 EXE 位于同一目录：
 
 ```ini
 [ChromeTaskbarMerger]
 scan_interval_ms=2000
+tab_provider=builtin
+persist_tab_names_by_profile=false
 windowtabs_check_interval_ms=3000
+tab_strip_alignment=center
+tab_strip_width_percent=60
+tab_width_px=180
 start_with_windows=false
 ```
 
-两个时间间隔均允许 500～60000 毫秒：`scan_interval_ms` 控制管理中的 Chrome
-扫描，`windowtabs_check_interval_ms` 控制等待期间的 WindowTabs 检测；
-`start_with_windows` 接受 `true` 或 `false`，默认关闭。
+- 两个时间间隔允许 500～60000 毫秒；
+- `tab_provider` 只接受 `builtin` 或 `windowtabs`；
+- 对齐只接受 `left`、`center`、`right`；标签栏总宽度允许 25～100%，单标签宽度允许
+  80～400 逻辑像素；
+- 直接修改 INI、切换标签方式或 profile 持久化后，必须从托盘完全退出并重新启动；
+- 登录启动只针对当前用户，无需管理员权限；移动便携目录后，从新位置手工运行一次即可修复路径。
 
-通过托盘修改会立即生效并保存 INI。直接编辑文件只在进程启动时读取：必须从托盘彻底退出后重新运行。已有实例运行时再次双击 EXE 只会请求重新扫描，不算重启。手工将 `false` 改为 `true` 后，需要手动重新运行一次，程序才能创建当前用户的 Windows `Run` 启动项。
+### 自定义标签名称
 
-这里的自动启动是“当前用户登录后启动”，不是系统服务，无需管理员权限。手动启动和登录启动使用同一套前置条件逻辑：WindowTabs 不可用时，程序会持续显示“等待 WindowTabs”，不移除 Chrome 按钮；WindowTabs 出现后自动进入管理。管理期间 WindowTabs 退出时会先恢复按钮，重启后自动恢复管理。用户主动暂停则始终保持暂停。移动便携目录后，需要从新位置手动运行一次以修复注册的 EXE 路径。
+在内置模式下双击标签主体，输入任意 Unicode 文本后按 `Enter`；按 `Esc` 取消，清空并确认则
+恢复 Chrome 实时标题。名称至少会在当前程序进程内一直有效。
+
+profile 持久化默认关闭。启用后，文件只保存 SHA-256 profile 键和自定义名称；只有目标窗口能与
+本地 Chrome profile 元数据唯一验证时才加载。无痕、访客、歧义或识别失败会保留内存名称，程序
+不会猜测或串用。
 
 ## 日志和异常恢复
 
-运行数据保存在便携目录之外：
+运行数据保存在 `%LOCALAPPDATA%\ChromeTaskbarMerger`：
 
 ```text
-%LOCALAPPDATA%\ChromeTaskbarMerger\logs\ChromeTaskbarMerger.log
-%LOCALAPPDATA%\ChromeTaskbarMerger\recovery-v1.tsv
+logs\ChromeTaskbarMerger.log
+recovery-v1.tsv
+recovery-v2.tsv
+profile-tab-names-v1.tsv
 ```
 
-如果程序被强制结束，请重新启动。程序会先恢复身份仍然精确匹配的上次状态，再应用当前规则。
-
-在 PowerShell 中请求显式恢复并等待结果：
+如果进程被强制结束，重新启动 EXE；程序会先恢复有效的上次状态，再开始新的管理会话。
+也可以在 PowerShell 中显式恢复并读取退出码：
 
 ```powershell
 $process = Start-Process `
@@ -137,103 +131,62 @@ $process = Start-Process `
 $process.ExitCode
 ```
 
-退出码 `0` 表示恢复完成。如果按钮仍未返回，请保留恢复记录和日志，在任务管理器中重启“Windows 资源管理器”，然后再次执行 `--restore-all`。
+任务栏按钮或布局仍被修改时，不要手工删除恢复记录。
 
-> [!WARNING]
-> 仍有 Chrome 任务栏按钮被移除时，不要手工删除 `recovery-v1.tsv`。
+## 构建和测试
 
-## 命令行诊断
+构建要求：Windows 11 x64、CMake 3.24+，以及包含“使用 C++ 的桌面开发”的 Visual Studio
+2022 或更高版本。
+
+```powershell
+git clone https://github.com/yangyunzhao/ChromeTaskbarMerger.git
+cd ChromeTaskbarMerger
+.\scripts\build-portable.ps1
+```
+
+脚本会执行全新 Debug/Release 构建和两套 CTest，并生成 `dist/ChromeTaskbarMerger`、便携 ZIP
+及 `SHA256SUMS.txt`。构建树和 `dist/` 不提交到 Git。
+
+常用诊断命令：
 
 ```text
 ChromeTaskbarMerger.exe --help
 ChromeTaskbarMerger.exe --version
-ChromeTaskbarMerger.exe --autostart
 ChromeTaskbarMerger.exe --list
-ChromeTaskbarMerger.exe --experiment
-ChromeTaskbarMerger.exe --manage
+ChromeTaskbarMerger.exe --v2-experiment
 ChromeTaskbarMerger.exe --restore-all
 ```
 
-- `--list` 只读分类 Chrome 窗口。
-- `--experiment` 保留 Phase 2 的交互式任务栏方法诊断。
-- `--manage` 启动诊断用控制台生命周期监控。
-- `--restore-all` 恢复有效记录及当前可识别 Chrome 的任务栏注册。
-- `--autostart` 是 Windows 登录启动项使用的内部标记；如果 INI 已关闭自动启动，陈旧调用会删除注册项后退出。
-- 未知参数返回退出码 `2`。
+## 验证状态与已知限制
 
-Release 是 Windows GUI 子系统程序。脚本需要等待完成或读取退出码时，请使用 `Start-Process -Wait -PassThru`。
+2.0.0 的自动测试覆盖命令解析、配置与启动迁移、profile 匹配和存储、任务栏/布局恢复、窗口
+生命周期和几何同步、标签编辑与导航、Explorer 重建及单实例。Windows 11 真实验收覆盖 1/3/5
+个 Chrome、移动、最大化/最小化/恢复、Snap、F11、暂停/恢复、Explorer 重启、强制结束恢复、
+登录启动、profile 名称、模态对话框、正常退出和空闲资源。
 
-## 构建和测试
+已知限制：
 
-```powershell
-cmake -S . -B build -A x64
-cmake --build build --config Debug
-cmake --build build --config Release
-ctest --test-dir build -C Debug --output-on-failure
-ctest --test-dir build -C Release --output-on-failure
-```
+- 首次内置建组最多接受 5 个普通 Chrome 窗口；运行中新增的额外窗口保持独立，直到出现空位；
+- 受管最大化按钮可能仍显示“最大化”而不是传统“还原”图标，但最大化和恢复行为正常；该视觉
+  专项已登记到 V3；
+- Windows 10、其他 Chromium 浏览器，以及所有多显示器/DPI/虚拟桌面组合尚未完成正式验证；
+- Windows 设置或任务管理器可能禁用启动应用，系统层面的决定优先于 INI。
 
-在独立的全新构建目录中生成便携目录和 ZIP：
-
-```powershell
-.\scripts\build-portable.ps1
-```
-
-构建目录和 `dist/` 已有意通过 Git 忽略。发布 ZIP 应作为 GitHub Release 附件上传，不应提交到源码仓库。
-
-应用图标源稿和多尺寸 ICO 位于 `assets/`。修改 SVG 后，安装了 Chrome 和 FFmpeg 的开发环境可执行：
-
-```powershell
-.\scripts\build-icon.ps1
-```
-
-## 验证状态
-
-版本 `1.0.0` 在 Debug 和 Release 配置下均通过全新构建和 6/6 CTest。自动测试覆盖命令解析、Chrome 身份、固定入口生命周期、恢复幂等性、写前失败保护、损坏日志拒绝、陈旧 HWND/PID 防护、任务栏重建、单实例消息、配置原子更新、临时注册表启动生命周期、便携路径修复、配置校验和管理状态转换。
-
-真实任务栏已经验证 1、3、5 个 Chrome 窗口、窗口新建和关闭、主入口替换、暂停/恢复、Explorer 重启、强制结束恢复、正常退出恢复、便携托盘体验和空闲 CPU。自动进程级联调和用户使用真实 WindowTabs 的最终验收均确认了“等待 → 管理 → 等待”生命周期及用户暂停粘性。
-
-详细工程证据：
-
-- [文档索引](docs/README.md)
-- [V1 需求与设计](docs/V1_REQUIREMENTS.md)
-- [V2 需求与设计](docs/V2_REQUIREMENTS.md)
-- [Codex 开发与验收规范](docs/CODEX_DEVELOPMENT_GUIDE.md)
-- [手工测试计划和已记录结果](tests/manual_test_plan.md)
-
-## 已知限制
-
-- 被管理的非入口 Chrome 窗口可能不会出现在 Alt+Tab 中。
-- 因此 WindowTabs 是启用管理的运行前置条件。
-- 任务栏入口保持固定，不会跟随当前活动 Chrome 窗口。
-- Windows 10、其他 Chromium 浏览器、多虚拟桌面及所有多显示器/DPI 组合尚未完成发布验证。
-- Windows 设置或任务管理器可以禁用已注册的启动应用；系统层面的选择优先于 INI 设置。
-- WindowTabs 可用性通过低频进程检测判断；没有独立的就绪 API，因此从进程出现到开始管理最多可能相差一个配置的检测周期。
-
-## 项目结构
-
-```text
-assets/   应用图标源稿和 ICO
-config/   便携配置模板
-docs/     便携用户说明
-scripts/  图标和便携包构建脚本
-src/      C++ 实现和 Windows 资源
-tests/    自动测试和人工验收记录
-```
+详细证据：[文档索引](docs/README.md)、[V2 需求](docs/V2_REQUIREMENTS.md)、
+[profile 持久化评估](docs/V2_PROFILE_NAME_PERSISTENCE.md)和
+[V2 人工验收记录](tests/manual_test_plan_v2.md)。
 
 ## 卸载
 
-1. 在托盘菜单中取消勾选“随 Windows 登录自动启动”。
-2. 选择“退出”，确认所有 Chrome 按钮恢复。
-3. 删除便携程序目录。
-4. 确认不再需要日志和恢复记录后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
+1. 在托盘取消“随 Windows 登录自动启动”；
+2. 选择“退出”，确认 Chrome 任务栏按钮和窗口布局恢复；
+3. 删除便携目录；
+4. 确认恢复文件已不再需要后，可删除 `%LOCALAPPDATA%\ChromeTaskbarMerger`。
 
-## 开发人员
+## 开发人员与许可证
 
 **杨云召** · [github.com/yangyunzhao](https://github.com/yangyunzhao)
 
 项目地址：[github.com/yangyunzhao/ChromeTaskbarMerger](https://github.com/yangyunzhao/ChromeTaskbarMerger)
 
-## 许可证
-
-ChromeTaskbarMerger 使用 [MIT License](LICENSE)。
+本项目采用 [MIT License](LICENSE)。

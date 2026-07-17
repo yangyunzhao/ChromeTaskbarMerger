@@ -11,8 +11,11 @@ $distributionRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $repositoryRoot 'dist'))
 $portableDirectory = [System.IO.Path]::GetFullPath(
     (Join-Path $distributionRoot 'ChromeTaskbarMerger'))
+$version = '2.0.0'
 $archivePath = [System.IO.Path]::GetFullPath(
-    (Join-Path $distributionRoot 'ChromeTaskbarMerger-1.0.0-portable-x64.zip'))
+    (Join-Path $distributionRoot "ChromeTaskbarMerger-$version-portable-x64.zip"))
+$checksumPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $distributionRoot 'SHA256SUMS.txt'))
 
 function Assert-PathWithinRepository {
     param([Parameter(Mandatory)][string]$Path)
@@ -29,6 +32,7 @@ Assert-PathWithinRepository -Path $buildDirectory
 Assert-PathWithinRepository -Path $distributionRoot
 Assert-PathWithinRepository -Path $portableDirectory
 Assert-PathWithinRepository -Path $archivePath
+Assert-PathWithinRepository -Path $checksumPath
 
 if (Test-Path -LiteralPath $buildDirectory) {
     Remove-Item -LiteralPath $buildDirectory -Recurse -Force
@@ -38,6 +42,9 @@ if (Test-Path -LiteralPath $portableDirectory) {
 }
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
+}
+if (Test-Path -LiteralPath $checksumPath) {
+    Remove-Item -LiteralPath $checksumPath -Force
 }
 
 cmake -S $repositoryRoot -B $buildDirectory -A x64
@@ -62,5 +69,15 @@ foreach ($file in $requiredFiles) {
 
 Compress-Archive -LiteralPath $portableDirectory -DestinationPath $archivePath
 
+$portableExecutable = Join-Path $portableDirectory 'ChromeTaskbarMerger.exe'
+$archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash
+$executableHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $portableExecutable).Hash
+@(
+    "$archiveHash  $([System.IO.Path]::GetFileName($archivePath))"
+    "$executableHash  ChromeTaskbarMerger.exe"
+) | Set-Content -LiteralPath $checksumPath -Encoding ascii
+
 Write-Host "Portable directory: $portableDirectory"
 Write-Host "Portable archive:   $archivePath"
+Write-Host "SHA-256 manifest:   $checksumPath"

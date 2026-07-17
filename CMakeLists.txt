@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     ChromeTaskbarMerger
-    VERSION 1.0.0
-    DESCRIPTION "Keep a single Chrome entry on the Windows taskbar"
+    VERSION 2.0.0
+    DESCRIPTION "Group Chrome windows with native tabs and one taskbar entry"
     LANGUAGES CXX
 )
 
@@ -61,6 +61,8 @@ add_library(
         src/chrome_window.h
         src/chrome_window_registry.cpp
         src/chrome_window_registry.h
+        src/chrome_profile_resolver.cpp
+        src/chrome_profile_resolver.h
         src/app_config.cpp
         src/app_config.h
         src/app_paths.cpp
@@ -139,7 +141,18 @@ target_include_directories(
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 ctm_enable_warnings(ctm_core)
-target_link_libraries(ctm_core PUBLIC Advapi32 Comctl32 Dwmapi Imm32 Ole32)
+target_link_libraries(
+    ctm_core
+    PUBLIC
+        Advapi32
+        Bcrypt
+        Comctl32
+        Dwmapi
+        Imm32
+        Ole32
+        Shell32
+        UIAutomationCore
+)
 
 add_executable(
     ChromeTaskbarMerger

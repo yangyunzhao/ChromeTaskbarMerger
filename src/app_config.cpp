@@ -58,6 +58,12 @@ namespace {
            std::string(TabProviderConfigValue(provider));
 }
 
+[[nodiscard]] std::string ProfileTabNamePersistenceLine(
+    const bool enabled) {
+    return std::string("persist_tab_names_by_profile=") +
+           (enabled ? "true" : "false");
+}
+
 [[nodiscard]] std::string DefaultConfigurationText() {
     return "; ChromeTaskbarMerger portable configuration\r\n"
            "; Changes take effect after the application is restarted.\r\n"
@@ -67,6 +73,9 @@ namespace {
            "scan_interval_ms=2000\r\n"
            "; Built-in (default) or WindowTabs. Restart after changing.\r\n"
            "tab_provider=builtin\r\n"
+           "; Remember built-in custom names by local Chrome profile.\r\n"
+           "; Disabled by default; restart after changing.\r\n"
+           "persist_tab_names_by_profile=false\r\n"
            "; WindowTabs process check while that provider is selected.\r\n"
            "windowtabs_check_interval_ms=3000\r\n"
            "; Built-in tab strip: left, center, or right.\r\n"
@@ -294,6 +303,7 @@ AppConfigLoadResult LoadAppConfig(const std::filesystem::path& path) {
     bool windowtabs_check_interval_seen = false;
     bool start_with_windows_seen = false;
     bool tab_provider_seen = false;
+    bool profile_tab_name_persistence_seen = false;
     bool tab_strip_alignment_seen = false;
     bool tab_strip_width_percent_seen = false;
     bool tab_width_pixels_seen = false;
@@ -368,6 +378,26 @@ AppConfigLoadResult LoadAppConfig(const std::filesystem::path& path) {
                 result.warnings.push_back(LineWarning(
                     line_number,
                     L"tab_provider must be builtin or windowtabs; the previous value is kept."));
+            }
+            continue;
+        }
+
+        if (key == "persist_tab_names_by_profile") {
+            if (profile_tab_name_persistence_seen) {
+                result.warnings.push_back(LineWarning(
+                    line_number,
+                    L"duplicate persist_tab_names_by_profile; the last valid value is used."));
+            }
+            profile_tab_name_persistence_seen = true;
+            const std::string lowered_value = LowerAscii(value);
+            if (lowered_value == "true") {
+                result.config.persist_tab_names_by_profile = true;
+            } else if (lowered_value == "false") {
+                result.config.persist_tab_names_by_profile = false;
+            } else {
+                result.warnings.push_back(LineWarning(
+                    line_number,
+                    L"persist_tab_names_by_profile must be true or false; the previous value is kept."));
             }
             continue;
         }
@@ -512,6 +542,14 @@ AppConfigSaveResult SaveTabProviderSetting(
     const TabProvider provider) {
     const std::string setting = TabProviderLine(provider);
     return SaveSetting(path, "tab_provider", setting);
+}
+
+AppConfigSaveResult SaveProfileTabNamePersistenceSetting(
+    const std::filesystem::path& path,
+    const bool enabled) {
+    const std::string setting = ProfileTabNamePersistenceLine(enabled);
+    return SaveSetting(
+        path, "persist_tab_names_by_profile", setting);
 }
 
 std::string_view TabProviderConfigValue(

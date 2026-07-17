@@ -11,6 +11,8 @@ namespace ctm {
 namespace {
 
 constexpr std::string_view kHeader = "ChromeTaskbarMergerTabNames\t1";
+constexpr std::string_view kProfileHeader =
+    "ChromeTaskbarMergerProfileTabNames\t1";
 constexpr std::uintmax_t kMaximumFileSize = 256U * 1024U;
 constexpr std::size_t kMaximumRules = 256;
 
@@ -78,6 +80,15 @@ constexpr std::size_t kMaximumRules = 256;
                           (character >= 'A' && character <= 'Z') ||
                           (character >= '0' && character <= '9') ||
                           character == '-' || character == '_';
+               });
+}
+
+[[nodiscard]] bool ProfileKeyIsValid(const std::string_view key) {
+    return key.size() == 64U &&
+           std::all_of(
+               key.begin(), key.end(), [](const unsigned char character) {
+                   return (character >= '0' && character <= '9') ||
+                          (character >= 'a' && character <= 'f');
                });
 }
 
@@ -206,6 +217,82 @@ bool InMemoryTabNameStore::Remove(
 
 void InMemoryTabNameStore::Clear() noexcept {
     entries_.clear();
+}
+
+bool ProfileTabNameStore::Replace(
+    std::vector<ProfileTabNameEntry> entries) noexcept {
+    if (entries.size() > kMaximumRules) {
+        return false;
+    }
+    std::unordered_set<std::string> keys;
+    for (const ProfileTabNameEntry& entry : entries) {
+        if (!ProfileKeyIsValid(entry.profile_key) ||
+            !TextIsValid(entry.display_name, kMaximumInMemoryTabNameLength) ||
+            !keys.insert(entry.profile_key).second) {
+            return false;
+        }
+    }
+    entries_ = std::move(entries);
+    return true;
+}
+
+InMemoryTabNameUpdateResult ProfileTabNameStore::Set(
+    const std::string_view profile_key,
+    const std::wstring_view name) {
+    if (!ProfileKeyIsValid(profile_key)) {
+        return InMemoryTabNameUpdateResult::InvalidIdentity;
+    }
+    if (name.size() > kMaximumInMemoryTabNameLength) {
+        return InMemoryTabNameUpdateResult::TooLong;
+    }
+    if (name.find_first_of(L"\t\r\n") != std::wstring_view::npos) {
+        return InMemoryTabNameUpdateResult::InvalidText;
+    }
+    const auto existing = std::find_if(
+        entries_.begin(), entries_.end(),
+        [profile_key](const ProfileTabNameEntry& entry) {
+            return entry.profile_key == profile_key;
+        });
+    if (name.empty()) {
+        if (existing != entries_.end()) {
+            entries_.erase(existing);
+        }
+        return InMemoryTabNameUpdateResult::Cleared;
+    }
+    if (existing != entries_.end()) {
+        existing->display_name.assign(name);
+    } else {
+        if (entries_.size() >= kMaximumRules) {
+            return InMemoryTabNameUpdateResult::InvalidText;
+        }
+        entries_.push_back({
+            .profile_key = std::string(profile_key),
+            .display_name = std::wstring(name),
+        });
+    }
+    return InMemoryTabNameUpdateResult::Stored;
+}
+
+std::optional<std::wstring> ProfileTabNameStore::Find(
+    const std::string_view profile_key) const {
+    if (!ProfileKeyIsValid(profile_key)) {
+        return std::nullopt;
+    }
+    const auto match = std::find_if(
+        entries_.begin(), entries_.end(),
+        [profile_key](const ProfileTabNameEntry& entry) {
+            return entry.profile_key == profile_key;
+        });
+    return match == entries_.end()
+               ? std::nullopt
+               : std::optional<std::wstring>(match->display_name);
+}
+
+std::wstring ProfileTabNameStore::Resolve(
+    const std::string_view profile_key,
+    const std::wstring_view fallback) const {
+    const std::optional<std::wstring> custom = Find(profile_key);
+    return custom.has_value() ? *custom : std::wstring(fallback);
 }
 
 std::string SerializeTabNameRules(
@@ -422,6 +509,197 @@ std::vector<std::wstring> ResolveTabDisplayNames(
         }
     }
     return names;
+}
+
+std::string SerializeProfileTabNames(
+    const std::span<const ProfileTabNameEntry> entries) {
+    if (entries.size() > kMaximumRules) {
+        return {};
+    }
+    std::unordered_set<std::string> keys;
+    std::string serialized(kProfileHeader);
+    serialized.push_back('\n');
+    for (const ProfileTabNameEntry& entry : entries) {
+        if (!ProfileKeyIsValid(entry.profile_key) ||
+            !TextIsValid(entry.display_name, kMaximumInMemoryTabNameLength) ||
+            !keys.insert(entry.profile_key).second) {
+            return {};
+        }
+        serialized += "profile\t" + entry.profile_key + "\t" +
+                      WideToUtf8(entry.display_name) + "\n";
+    }
+    return serialized.size() <= kMaximumFileSize ? serialized
+                                                  : std::string{};
+}
+
+ProfileTabNameParseResult ParseProfileTabNames(
+    const std::string_view serialized) {
+    ProfileTabNameParseResult result;
+    if (serialized.empty() || serialized.size() > kMaximumFileSize) {
+        result.error_message =
+            L"The profile tab-name file is empty or too large.";
+        return result;
+    }
+    std::size_t start = 0;
+    std::size_t line_number = 0;
+    std::unordered_set<std::string> keys;
+    while (start <= serialized.size()) {
+        const std::size_t newline = serialized.find('\n', start);
+        std::string_view line = newline == std::string_view::npos
+                                    ? serialized.substr(start)
+                                    : serialized.substr(start, newline - start);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        ++line_number;
+        if (line_number == 1) {
+            if (line != kProfileHeader) {
+                result.error_message =
+                    L"The profile tab-name file header or version is invalid.";
+                return result;
+            }
+        } else if (!line.empty()) {
+            if (result.entries.size() >= kMaximumRules) {
+                result.entries.clear();
+                result.error_message =
+                    L"The profile tab-name entry limit was exceeded.";
+                return result;
+            }
+            const std::vector fields = Split(line);
+            if (fields.size() != 3 || fields[0] != "profile") {
+                result.entries.clear();
+                result.error_message =
+                    L"Profile tab-name line " +
+                    std::to_wstring(line_number) + L" has an invalid shape.";
+                return result;
+            }
+            ProfileTabNameEntry entry{
+                .profile_key = std::string(fields[1]),
+                .display_name = Utf8ToWide(fields[2]),
+            };
+            if (!ProfileKeyIsValid(entry.profile_key) ||
+                !TextIsValid(
+                    entry.display_name, kMaximumInMemoryTabNameLength) ||
+                !keys.insert(entry.profile_key).second) {
+                result.entries.clear();
+                result.error_message =
+                    L"Profile tab-name line " +
+                    std::to_wstring(line_number) +
+                    L" is invalid or duplicated.";
+                return result;
+            }
+            result.entries.push_back(std::move(entry));
+        }
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        start = newline + 1;
+    }
+    result.succeeded = true;
+    return result;
+}
+
+ProfileTabNameLoadResult LoadProfileTabNames(
+    const std::filesystem::path& path) {
+    ProfileTabNameLoadResult result;
+    if (path.empty()) {
+        result.error_message = L"The profile tab-name path is unavailable.";
+        return result;
+    }
+    std::error_code error;
+    result.file_found = std::filesystem::exists(path, error);
+    if (error) {
+        result.error_message =
+            L"Querying the profile tab-name file failed.";
+        return result;
+    }
+    if (!result.file_found) {
+        result.succeeded = true;
+        return result;
+    }
+    const std::uintmax_t size = std::filesystem::file_size(path, error);
+    if (error || size > kMaximumFileSize) {
+        result.error_message =
+            L"The profile tab-name file is unavailable or too large.";
+        return result;
+    }
+    std::ifstream input(path, std::ios::in | std::ios::binary);
+    if (!input.is_open()) {
+        result.error_message =
+            L"Opening the profile tab-name file failed.";
+        return result;
+    }
+    const std::string text{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    if (input.bad()) {
+        result.error_message =
+            L"Reading the profile tab-name file failed.";
+        return result;
+    }
+    ProfileTabNameParseResult parsed = ParseProfileTabNames(text);
+    result.succeeded = parsed.succeeded;
+    result.entries = std::move(parsed.entries);
+    result.error_message = std::move(parsed.error_message);
+    return result;
+}
+
+bool SaveProfileTabNamesAtomically(
+    const std::filesystem::path& path,
+    const std::span<const ProfileTabNameEntry> entries,
+    std::wstring* const error_message) {
+    const std::string serialized = SerializeProfileTabNames(entries);
+    if (path.empty() || serialized.empty()) {
+        if (error_message != nullptr) {
+            *error_message =
+                L"The profile tab-name path or entry set is invalid.";
+        }
+        return false;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) {
+        if (error_message != nullptr) {
+            *error_message =
+                L"Creating the profile tab-name directory failed.";
+        }
+        return false;
+    }
+    std::filesystem::path temporary = path;
+    temporary += L".tmp-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                 std::to_wstring(GetTickCount64());
+    {
+        std::ofstream output(
+            temporary, std::ios::out | std::ios::binary | std::ios::trunc);
+        output.write(
+            serialized.data(), static_cast<std::streamsize>(serialized.size()));
+        output.flush();
+        if (!output.good()) {
+            output.close();
+            std::filesystem::remove(temporary, error);
+            if (error_message != nullptr) {
+                *error_message =
+                    L"Writing the profile tab-name file failed.";
+            }
+            return false;
+        }
+    }
+    if (MoveFileExW(
+            temporary.c_str(), path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+        const DWORD move_error = GetLastError();
+        std::filesystem::remove(temporary, error);
+        if (error_message != nullptr) {
+            *error_message =
+                L"Replacing the profile tab-name file failed with Win32 error " +
+                std::to_wstring(move_error) + L'.';
+        }
+        return false;
+    }
+    if (error_message != nullptr) {
+        error_message->clear();
+    }
+    return true;
 }
 
 }  // namespace ctm

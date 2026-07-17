@@ -144,6 +144,8 @@ void TestMissingConfigurationUsesDefaults() {
            "a missing configuration should keep login startup disabled");
     Expect(result.config.tab_provider == ctm::TabProvider::BuiltIn,
            "a missing V1 configuration should migrate to built-in tabs");
+    Expect(!result.config.persist_tab_names_by_profile,
+           "profile-linked tab names should be opt-in by default");
     Expect(result.config.tab_strip_alignment ==
                ctm::TabStripAlignment::Center &&
                result.config.tab_strip_width_percent == 60 &&
@@ -172,6 +174,7 @@ void TestValidConfigurationLoadsScanInterval() {
         "windowtabs_check_interval_ms=1750\r\n"
         "start_with_windows=TrUe\r\n"
         "tab_provider=WindowTabs\r\n"
+        "persist_tab_names_by_profile=TrUe\r\n"
         "tab_strip_alignment=right\r\n"
         "tab_strip_width_percent=75\r\n"
         "tab_width_px=220\r\n");
@@ -187,6 +190,8 @@ void TestValidConfigurationLoadsScanInterval() {
            "a case-insensitive true value should enable login startup");
     Expect(result.config.tab_provider == ctm::TabProvider::WindowTabs,
            "a case-insensitive WindowTabs provider should load");
+    Expect(result.config.persist_tab_names_by_profile,
+           "a case-insensitive true value should enable profile name persistence");
     Expect(result.config.tab_strip_alignment ==
                ctm::TabStripAlignment::Right &&
                result.config.tab_strip_width_percent == 75 &&
@@ -243,6 +248,7 @@ void TestInvalidV2SettingsFallBackWithoutDiscardingValidValues() {
         path,
         "[ChromeTaskbarMerger]\n"
         "tab_provider=unknown\n"
+        "persist_tab_names_by_profile=maybe\n"
         "tab_strip_alignment=middle\n"
         "tab_strip_width_percent=24\n"
         "tab_width_px=401\n"
@@ -256,8 +262,39 @@ void TestInvalidV2SettingsFallBackWithoutDiscardingValidValues() {
            "invalid V2 settings should retain their safe defaults");
     Expect(result.config.scan_interval == std::chrono::milliseconds(1500),
            "an invalid V2 setting must not discard an unrelated valid setting");
-    Expect(result.warnings.size() == 4,
+    Expect(!result.config.persist_tab_names_by_profile,
+           "an invalid profile persistence value should retain the opt-in default");
+    Expect(result.warnings.size() == 5,
            "each invalid V2 setting should emit one precise warning");
+}
+
+void TestProfileNamePersistenceSettingSavesAtomically() {
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path = directory.path() / L"profile-names.ini";
+    WriteTextFile(
+        path,
+        "; keep profile setting comment\r\n"
+        "[ChromeTaskbarMerger]\r\n"
+        "tab_provider=builtin\r\n"
+        "persist_tab_names_by_profile=false\r\n"
+        "persist_tab_names_by_profile=false\r\n"
+        "scan_interval_ms=1250\r\n");
+    const ctm::AppConfigSaveResult save =
+        ctm::SaveProfileTabNamePersistenceSetting(path, true);
+    const ctm::AppConfigLoadResult loaded = ctm::LoadAppConfig(path);
+    const std::string text = ReadTextFile(path);
+    Expect(save.succeeded && loaded.read_succeeded &&
+               loaded.config.persist_tab_names_by_profile,
+           "profile name persistence should survive an atomic reload");
+    Expect(loaded.config.tab_provider == ctm::TabProvider::BuiltIn &&
+               loaded.config.scan_interval == std::chrono::milliseconds(1250),
+           "saving profile persistence should preserve unrelated settings");
+    Expect(CountOccurrences(text, "persist_tab_names_by_profile=") == 1 &&
+               text.find("; keep profile setting comment") != std::string::npos,
+           "saving profile persistence should remove duplicates and preserve comments");
 }
 
 void TestTabProviderSaveFailureLeavesNoAmbiguousSuccess() {
@@ -590,6 +627,7 @@ int main() {
     TestStartWithWindowsSettingSavesWithoutDiscardingConfiguration();
     TestTabProviderSettingSavesAtomicallyAndPreservesV1Keys();
     TestInvalidV2SettingsFallBackWithoutDiscardingValidValues();
+    TestProfileNamePersistenceSettingSavesAtomically();
     TestTabProviderSaveFailureLeavesNoAmbiguousSuccess();
     TestSavingCreatesAMissingPortableConfiguration();
     TestInvalidStartWithWindowsValueFailsClosed();

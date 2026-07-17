@@ -225,6 +225,75 @@ void TestInMemoryNameValidationAndExplicitLifetime() {
            "process shutdown can discard every in-memory name without persistence");
 }
 
+[[nodiscard]] std::string ProfileKey(const char value) {
+    return std::string(64U, value);
+}
+
+void TestProfileNamesRoundTripAndRejectCorruption() {
+    const std::vector entries = {
+        ctm::ProfileTabNameEntry{
+            .profile_key = ProfileKey('a'),
+            .display_name = L"工作账户",
+        },
+        ctm::ProfileTabNameEntry{
+            .profile_key = ProfileKey('b'),
+            .display_name = L"个人账户",
+        },
+    };
+    const std::string serialized = ctm::SerializeProfileTabNames(entries);
+    const ctm::ProfileTabNameParseResult parsed =
+        ctm::ParseProfileTabNames(serialized);
+    Expect(parsed.succeeded && parsed.entries.size() == 2 &&
+               parsed.entries[0].display_name == L"工作账户",
+           "hashed profile names and Chinese text should round-trip");
+
+    TemporaryDirectory directory;
+    if (!directory.created()) {
+        return;
+    }
+    const std::filesystem::path path =
+        directory.path() / L"profile-tab-names-v1.tsv";
+    std::wstring error;
+    Expect(ctm::SaveProfileTabNamesAtomically(path, entries, &error),
+           "profile-linked names should save atomically");
+    const ctm::ProfileTabNameLoadResult loaded =
+        ctm::LoadProfileTabNames(path);
+    Expect(loaded.succeeded && loaded.file_found &&
+               loaded.entries.size() == 2,
+           "atomically saved profile-linked names should reload");
+
+    const std::string duplicate =
+        "ChromeTaskbarMergerProfileTabNames\t1\nprofile\t" +
+        ProfileKey('c') + "\tA\nprofile\t" + ProfileKey('c') +
+        "\tB\n";
+    const ctm::ProfileTabNameParseResult duplicate_result =
+        ctm::ParseProfileTabNames(duplicate);
+    Expect(!duplicate_result.succeeded && duplicate_result.entries.empty(),
+           "duplicate hashed profile keys should reject the whole file");
+    const ctm::ProfileTabNameParseResult raw_path =
+        ctm::ParseProfileTabNames(
+            "ChromeTaskbarMergerProfileTabNames\t1\n"
+            "profile\tC:\\Users\\person\\Profile 1\tPrivate\n");
+    Expect(!raw_path.succeeded,
+           "a raw profile path must never be accepted as a persistence key");
+}
+
+void TestProfileNameStoreSupportsSharedAndClearedNames() {
+    ctm::ProfileTabNameStore names;
+    const std::string key = ProfileKey('d');
+    Expect(names.Set(key, L"共享中文名") ==
+               ctm::InMemoryTabNameUpdateResult::Stored &&
+               names.Resolve(key, L"fallback") == L"共享中文名",
+           "one profile key should resolve to its shared custom name");
+    Expect(names.Set(key, L"") ==
+               ctm::InMemoryTabNameUpdateResult::Cleared &&
+               names.Resolve(key, L"fallback") == L"fallback",
+           "clearing a profile name should restore the caller fallback");
+    Expect(names.Set("not-a-hash", L"unsafe") ==
+               ctm::InMemoryTabNameUpdateResult::InvalidIdentity,
+           "unhashed profile identifiers should be rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -233,6 +302,8 @@ int main() {
     TestConservativeMatchingNeverUsesHwndOrAmbiguousRules();
     TestInMemoryNamesFollowCompleteWindowIdentity();
     TestInMemoryNameValidationAndExplicitLifetime();
+    TestProfileNamesRoundTripAndRejectCorruption();
+    TestProfileNameStoreSupportsSharedAndClearedNames();
 
     if (failures != 0) {
         std::cerr << failures << " tab-name store test(s) failed.\n";

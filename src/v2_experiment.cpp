@@ -4,6 +4,7 @@
 #include "app_paths.h"
 #include "chrome_window.h"
 #include "chrome_window_registry.h"
+#include "chrome_profile_resolver.h"
 #include "ctm/version.h"
 #include "fixed_entry_manager.h"
 #include "group_recovery_journal.h"
@@ -429,12 +430,21 @@ public:
         std::vector<ChromeWindowSnapshot> windows,
         AppConfig config = {},
         std::vector<TabNameRule> tab_name_rules = {},
-        InMemoryTabNameStore* in_memory_tab_names = nullptr)
+        InMemoryTabNameStore* in_memory_tab_names = nullptr,
+        ProfileTabNameStore* profile_tab_names = nullptr,
+        ChromeProfileResolver* profile_resolver = nullptr,
+        std::filesystem::path profile_tab_names_path = {},
+        bool profile_name_persistence_available = false)
         : instance_(instance),
           logger_(logger),
           config_(config),
           tab_name_rules_(std::move(tab_name_rules)),
           in_memory_tab_names_(in_memory_tab_names),
+          profile_tab_names_(profile_tab_names),
+          profile_resolver_(profile_resolver),
+          profile_tab_names_path_(std::move(profile_tab_names_path)),
+          profile_name_persistence_available_(
+              profile_name_persistence_available),
           windows_(std::move(windows)),
           v1_recovery_journal_(std::move(v1_recovery_path)),
           group_recovery_journal_(std::move(group_recovery_path)),
@@ -550,6 +560,19 @@ public:
         strip_items.reserve(windows_.size());
         const std::vector<std::wstring> display_names =
             ResolveDisplayNames(windows_);
+        if (profile_name_persistence_available_ &&
+            profile_resolver_ != nullptr) {
+            for (std::size_t index = 0; index < windows_.size(); ++index) {
+                const ChromeProfileResolution resolution =
+                    profile_resolver_->Resolve(windows_[index]);
+                WriteLine(
+                    logger_,
+                    L"PROFILE_NAME_RESOLUTION window_index=" +
+                        std::to_wstring(index + 1U) + L" status=" +
+                        std::wstring(ChromeProfileResolutionStatusName(
+                            resolution.status)));
+            }
+        }
         for (std::size_t index = 0; index < windows_.size(); ++index) {
             const ChromeWindowSnapshot& snapshot = windows_[index];
             const WindowIdentity identity = MakeIdentity(snapshot);
@@ -1097,6 +1120,7 @@ public:
                 true);
             return;
         }
+        ApplyProfileNameUpdate(identity, name);
         const std::optional<WindowIdentity> active =
             registry_.active_identity();
         if (!active.has_value()) {
@@ -1125,6 +1149,81 @@ public:
     }
 
 private:
+    void ApplyProfileNameUpdate(
+        const WindowIdentity& identity,
+        const std::wstring_view name) {
+        if (!profile_name_persistence_available_ ||
+            profile_tab_names_ == nullptr || profile_resolver_ == nullptr) {
+            return;
+        }
+        const auto selected = std::find_if(
+            registry_.windows().begin(), registry_.windows().end(),
+            [&identity](const ChromeWindowSnapshot& snapshot) {
+                return WindowIdentitiesMatch(identity, MakeIdentity(snapshot));
+            });
+        if (selected == registry_.windows().end()) {
+            return;
+        }
+        const ChromeProfileResolution selected_profile =
+            profile_resolver_->Resolve(*selected);
+        if (!selected_profile.matched()) {
+            WriteLine(
+                logger_,
+                L"TAB_NAME_PROFILE_FALLBACK status=" +
+                    std::wstring(ChromeProfileResolutionStatusName(
+                        selected_profile.status)) +
+                    L"; memory name remains active.",
+                true);
+            return;
+        }
+
+        std::size_t shared_window_count = 0;
+        for (const ChromeWindowSnapshot& snapshot : registry_.windows()) {
+            const ChromeProfileResolution candidate =
+                profile_resolver_->Resolve(snapshot);
+            if (!candidate.matched() ||
+                candidate.profile_key != selected_profile.profile_key) {
+                continue;
+            }
+            const InMemoryTabNameUpdateResult shared_update =
+                in_memory_tab_names_->Set(MakeIdentity(snapshot), name);
+            if (shared_update == InMemoryTabNameUpdateResult::Stored ||
+                shared_update == InMemoryTabNameUpdateResult::Cleared) {
+                ++shared_window_count;
+            }
+        }
+
+        const InMemoryTabNameUpdateResult profile_update =
+            profile_tab_names_->Set(selected_profile.profile_key, name);
+        if (profile_update != InMemoryTabNameUpdateResult::Stored &&
+            profile_update != InMemoryTabNameUpdateResult::Cleared) {
+            WriteLine(
+                logger_,
+                L"TAB_NAME_PROFILE_REJECTED; memory name remains active.",
+                true);
+            return;
+        }
+        std::wstring save_error;
+        if (!SaveProfileTabNamesAtomically(
+                profile_tab_names_path_, profile_tab_names_->entries(),
+                &save_error)) {
+            WriteLine(
+                logger_,
+                L"TAB_NAME_PROFILE_SAVE_FAILED; memory name remains active: " +
+                    save_error,
+                true);
+            return;
+        }
+        WriteLine(
+            logger_,
+            std::wstring(profile_update == InMemoryTabNameUpdateResult::Stored
+                             ? L"TAB_NAME_PROFILE_SAVED"
+                             : L"TAB_NAME_PROFILE_CLEARED") +
+                L" shared_windows=" +
+                std::to_wstring(shared_window_count) + L" length=" +
+                std::to_wstring(name.size()));
+    }
+
     [[nodiscard]] std::optional<WindowIdentity> FindRegistryIdentity(
         const HWND hwnd) const {
         const auto match = std::find_if(
@@ -1532,12 +1631,21 @@ private:
         const std::span<const ChromeWindowSnapshot> windows) const {
         std::vector<std::wstring> names =
             ResolveTabDisplayNames(tab_name_rules_, windows);
-        if (in_memory_tab_names_ == nullptr) {
-            return names;
-        }
         for (std::size_t index = 0; index < windows.size(); ++index) {
-            names[index] = in_memory_tab_names_->Resolve(
-                MakeIdentity(windows[index]), names[index]);
+            if (profile_name_persistence_available_ &&
+                profile_tab_names_ != nullptr &&
+                profile_resolver_ != nullptr) {
+                const ChromeProfileResolution profile =
+                    profile_resolver_->Resolve(windows[index]);
+                if (profile.matched()) {
+                    names[index] = profile_tab_names_->Resolve(
+                        profile.profile_key, names[index]);
+                }
+            }
+            if (in_memory_tab_names_ != nullptr) {
+                names[index] = in_memory_tab_names_->Resolve(
+                    MakeIdentity(windows[index]), names[index]);
+            }
         }
         return names;
     }
@@ -2228,6 +2336,10 @@ private:
     AppConfig config_;
     std::vector<TabNameRule> tab_name_rules_;
     InMemoryTabNameStore* in_memory_tab_names_ = nullptr;
+    ProfileTabNameStore* profile_tab_names_ = nullptr;
+    ChromeProfileResolver* profile_resolver_ = nullptr;
+    std::filesystem::path profile_tab_names_path_;
+    bool profile_name_persistence_available_ = false;
     std::size_t ignored_window_count_ = 0;
     std::vector<ChromeWindowSnapshot> windows_;
     std::vector<WindowIdentity> identities_;
@@ -2280,6 +2392,7 @@ constexpr UINT kV2MenuAbout = 207;
 constexpr UINT kV2MenuExit = 208;
 constexpr UINT kV2MenuProviderBuiltIn = 209;
 constexpr UINT kV2MenuProviderWindowTabs = 210;
+constexpr UINT kV2MenuPersistProfileTabNames = 211;
 constexpr int kV2HotKeyPreviousTab = 301;
 constexpr int kV2HotKeyNextTab = 302;
 constexpr UINT kV2ManagedTimerMilliseconds = 16;
@@ -2301,6 +2414,8 @@ public:
           logger_(logger),
           config_(config),
           configured_provider_(config.tab_provider),
+          configured_profile_name_persistence_(
+              config.persist_tab_names_by_profile),
           v1_recovery_path_(std::move(v1_recovery_path)),
           group_recovery_path_(std::move(group_recovery_path)),
           configuration_path_(std::move(configuration_path)),
@@ -2469,28 +2584,57 @@ private:
     }
 
     void InitializeManagement() {
-        std::wstring tab_name_path_error;
-        const std::filesystem::path tab_name_path =
-            GetTabNameRulesPath(&tab_name_path_error);
-        if (tab_name_path.empty()) {
+        std::wstring legacy_path_error;
+        const std::filesystem::path legacy_path =
+            GetTabNameRulesPath(&legacy_path_error);
+        if (legacy_path.empty()) {
             LogError(
-                L"Custom tab names are unavailable: " +
-                tab_name_path_error);
+                L"Legacy custom tab-name rules are unavailable: " +
+                legacy_path_error);
         } else {
-            TabNameLoadResult names = LoadTabNameRules(tab_name_path);
-            if (!names.succeeded) {
+            TabNameLoadResult legacy_names = LoadTabNameRules(legacy_path);
+            if (!legacy_names.succeeded) {
                 LogError(
-                    L"The custom tab-name file was ignored because it is invalid: " +
-                    names.error_message);
-                ShowNotification(
-                    L"自定义标签名称未加载",
-                    L"名称规则文件无效，已安全使用 Chrome 原标题。",
-                    NIIF_WARNING);
+                    L"The legacy tab-name rule file was ignored because it is invalid: " +
+                    legacy_names.error_message);
             } else {
-                tab_name_rules_ = std::move(names.rules);
+                tab_name_rules_ = std::move(legacy_names.rules);
                 LogInfo(
                     L"Loaded " + std::to_wstring(tab_name_rules_.size()) +
-                    L" custom tab-name rule(s).");
+                    L" legacy custom tab-name rule(s).");
+            }
+        }
+        if (!config_.persist_tab_names_by_profile) {
+            LogInfo(
+                L"Profile-linked tab-name persistence is disabled; Phase 6 memory names remain available.");
+        } else {
+            std::wstring path_error;
+            profile_tab_names_path_ = GetProfileTabNamesPath(&path_error);
+            if (profile_tab_names_path_.empty()) {
+                LogError(
+                    L"Profile-linked tab-name persistence is unavailable: " +
+                    path_error);
+            } else {
+                ProfileTabNameLoadResult names =
+                    LoadProfileTabNames(profile_tab_names_path_);
+                if (!names.succeeded ||
+                    !profile_tab_names_.Replace(std::move(names.entries))) {
+                    LogError(
+                        L"The profile tab-name file was ignored; memory fallback remains active: " +
+                        (names.error_message.empty()
+                             ? L"the loaded entries failed validation."
+                             : names.error_message));
+                    ShowNotification(
+                        L"持久化标签名称未加载",
+                        L"名称文件无效，本次运行已安全回退为内存名称。",
+                        NIIF_WARNING);
+                } else {
+                    profile_name_persistence_available_ = true;
+                    LogInfo(
+                        L"Profile-linked tab-name persistence is ready; loaded " +
+                        std::to_wstring(profile_tab_names_.size()) +
+                        L" hashed name(s).");
+                }
             }
         }
         const ProcessPresenceResult windowtabs =
@@ -2599,7 +2743,11 @@ private:
             std::move(scan.windows),
             config_,
             tab_name_rules_,
-            &in_memory_tab_names_);
+            &in_memory_tab_names_,
+            &profile_tab_names_,
+            &profile_resolver_,
+            profile_tab_names_path_,
+            profile_name_persistence_available_);
         if (!candidate->Prepare()) {
             candidate.reset();
             const bool restored = RecoveryJournalIsClear();
@@ -2861,6 +3009,37 @@ private:
         UpdateStatus();
     }
 
+    void ToggleProfileTabNamePersistence() {
+        const bool requested = !configured_profile_name_persistence_;
+        const AppConfigSaveResult saved =
+            SaveProfileTabNamePersistenceSetting(
+                configuration_path_, requested);
+        if (!saved.succeeded) {
+            LogError(
+                L"Saving persist_tab_names_by_profile failed: " +
+                saved.error_message);
+            ShowNotification(
+                L"标签名称持久化设置未保存",
+                L"无法原子更新配置，当前选择保持不变。",
+                NIIF_ERROR);
+            return;
+        }
+        configured_profile_name_persistence_ = requested;
+        LogInfo(
+            std::wstring(
+                requested
+                    ? L"Profile-linked tab-name persistence was enabled in configuration."
+                    : L"Profile-linked tab-name persistence was disabled in configuration.") +
+            L" Restart is required.");
+        ShowNotification(
+            requested ? L"已启用标签名称持久化"
+                      : L"已关闭标签名称持久化",
+            requested
+                ? L"完全退出并重新启动后，内置标签名称将按本地 Chrome profile 保存。"
+                : L"完全退出并重新启动后，只保留本次运行的内存名称。",
+            NIIF_INFO);
+    }
+
     void SynchronizeAutoStartRegistration() {
         const AutoStartOperationResult result =
             auto_start_registry_.SetEnabled(
@@ -3115,6 +3294,13 @@ private:
         AppendMenuW(
             menu,
             MF_STRING |
+                (configured_profile_name_persistence_ ? MF_CHECKED
+                                                      : MF_UNCHECKED),
+            kV2MenuPersistProfileTabNames,
+            L"按 Chrome profile 保存标签名称（重启生效）");
+        AppendMenuW(
+            menu,
+            MF_STRING |
                 (config_.start_with_windows ? MF_CHECKED : MF_UNCHECKED),
             kV2MenuStartWithWindows,
             L"随 Windows 登录自动启动");
@@ -3157,6 +3343,9 @@ private:
                 break;
             case kV2MenuProviderWindowTabs:
                 SelectProvider(TabProvider::WindowTabs);
+                break;
+            case kV2MenuPersistProfileTabNames:
+                ToggleProfileTabNamePersistence();
                 break;
             case kV2MenuStartWithWindows:
                 ToggleStartWithWindows();
@@ -3360,6 +3549,7 @@ private:
     Logger* logger_ = nullptr;
     AppConfig config_;
     TabProvider configured_provider_ = TabProvider::BuiltIn;
+    bool configured_profile_name_persistence_ = false;
     std::filesystem::path v1_recovery_path_;
     std::filesystem::path group_recovery_path_;
     std::filesystem::path configuration_path_;
@@ -3379,6 +3569,10 @@ private:
     ManagementStateMachine state_;
     std::vector<TabNameRule> tab_name_rules_;
     InMemoryTabNameStore in_memory_tab_names_;
+    ProfileTabNameStore profile_tab_names_;
+    ChromeProfileResolver profile_resolver_;
+    std::filesystem::path profile_tab_names_path_;
+    bool profile_name_persistence_available_ = false;
     std::unique_ptr<V2ExperimentSession> session_;
 };
 
