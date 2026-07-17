@@ -641,7 +641,7 @@ Phase 5 实现配置模型、校验、迁移、持久化和基础布局，Phase 
 `RECOVERY REQUIRED`。跨显示器/DPI 未收到执行结果，记录为 `NOT RUN`。
 
 Phase 3 当前结论：Debug/Release 12/12 自动测试及单显示器全部必需人工场景通过，状态标记为
-`PASS`。受管最大化按钮图标差异不影响功能，已登记到 `docs/V3_BACKLOG.md`，不阻塞 V2。
+`PASS`。受管最大化按钮图标差异不影响功能，已登记到 `docs/V3_REQUIREMENTS.md`，不阻塞 V2。
 
 ## Phase 4：原子恢复、异常终止和故障注入
 

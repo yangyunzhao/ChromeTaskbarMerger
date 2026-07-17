@@ -196,6 +196,28 @@ Detailed evidence: [documentation index](docs/README.md),
 [profile persistence assessment](docs/V2_PROFILE_NAME_PERSISTENCE.md), and
 [V2 manual results](tests/manual_test_plan_v2.md).
 
+## Roadmap
+
+Version 3 is planned as a quality release focused on usability, visual cohesion,
+and bug fixes rather than new product capabilities. Its current priorities are:
+
+- make the managed maximize/restore button glyph match its real state and action;
+- define and stabilize the built-in tab strip position across normal, maximized,
+  Snapped, F11, DPI, and workspace changes;
+- visually integrate the tab strip with Chrome while maximized, aiming for the
+  unified-window feel of WindowTabs without copying or injecting it;
+- finish with regression, recovery, flicker, focus, and resource-use hardening.
+
+The work is divided into six gated phases from visual specification and diagnostic
+baselines through a 3.0.0 release candidate. The maximized visual design will be
+confirmed from user-provided reference images before implementation. V2 recovery
+and accessibility guarantees remain mandatory, and unsupported visual techniques
+must safely fall back to the proven 2.0.0 layout.
+
+See the full [V3 usability and visual-quality plan](docs/V3_REQUIREMENTS.md).
+Requests that add new capabilities are kept in the separate
+[V4 feature backlog](docs/V4_BACKLOG.md) instead of expanding V3.
+
 ## Uninstall
 
 1. Clear **Start when signing in to Windows** in the tray menu.
