@@ -54,8 +54,8 @@ download the newest `ChromeTaskbarMerger-*-portable-x64.zip`, extract it to a
 writable directory, and run `ChromeTaskbarMerger.exe`. No installer or
 administrator privileges are required.
 
-The `main` branch contains the completed 3.1.0 source baseline. A 3.1.0 binary
-appears on the Releases page only after the separate release step is performed.
+Version 3.1.0 is the current published release; the `main` branch keeps its
+completed source baseline and routes future bug fixes or quality work to V3.2.
 
 The built-in provider is selected by default and does not need WindowTabs. Keep
 1–5 normal, non-minimized Chrome windows open when creating the initial group.
@@ -208,8 +208,8 @@ Version 3 is a rolling quality series focused on usability, visual cohesion, and
 bug fixes rather than new product capabilities. Each cohesive improvement ships
 as an independently accepted minor version instead of one long phase plan.
 
-V3.1 / 3.1.0 completed automated and real-Chrome validation on 2026-07-18 and is
-now frozen. It:
+V3.1 / 3.1.0 completed automated and real-Chrome validation and was published on
+2026-07-18. It is now frozen and:
 
 - keeps Chrome natively maximized so its maximize/restore glyph matches the real
   state and action;
