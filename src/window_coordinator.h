@@ -27,6 +27,9 @@ CalculateWindowGroupGeometryFromContentBounds(
     const RECT& content_bounds,
     const RECT& work_area,
     int tab_strip_height) noexcept;
+[[nodiscard]] WindowGroupGeometry CalculateNativeMaximizedGroupGeometry(
+    const RECT& work_area,
+    int tab_strip_height) noexcept;
 [[nodiscard]] int ScalePixelsForDpi(int pixels, UINT dpi) noexcept;
 [[nodiscard]] bool RectanglesEqual(
     const RECT& left,
@@ -80,6 +83,9 @@ public:
         const WindowIdentity& active_identity);
     [[nodiscard]] WindowCoordinationResult ArrangeAsNormal(
         const WindowGroupGeometry& geometry,
+        const WindowIdentity& active_identity);
+    [[nodiscard]] WindowCoordinationResult ArrangeAsMaximized(
+        const WindowGroupGeometry& restore_geometry,
         const WindowIdentity& active_identity);
     [[nodiscard]] WindowGroupRestoreReport RestoreAll();
 

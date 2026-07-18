@@ -94,7 +94,20 @@ struct MonitorGeometry {
     if (dpi == 0) {
         dpi = USER_DEFAULT_SCREEN_DPI;
     }
-    return ScalePixelsForDpi(kV2TabStripHeight, dpi);
+    return ScalePixelsForDpi(kV31TabStripHeight, dpi);
+}
+
+[[nodiscard]] int CaptionControlReserveForWindow(
+    const HWND hwnd) noexcept {
+    UINT dpi = GetDpiForWindow(hwnd);
+    if (dpi == 0) {
+        dpi = USER_DEFAULT_SCREEN_DPI;
+    }
+    return CalculateCaptionControlReserveWidth(
+        GetSystemMetricsForDpi(SM_CXSIZE, dpi),
+        GetSystemMetricsForDpi(SM_CYSIZE, dpi),
+        GetSystemMetricsForDpi(SM_CXFRAME, dpi),
+        GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi));
 }
 
 class ConsoleControlGuard final {
@@ -634,6 +647,7 @@ public:
 
         DWORD strip_error = ERROR_SUCCESS;
         tab_strip_.SetMaximumTabWidth(config_.tab_width_pixels);
+        tab_strip_.SetContentAlignment(config_.tab_strip_alignment);
         if (!tab_strip_.Create(
                 instance_,
                 active_identity_.hwnd,
@@ -1278,11 +1292,34 @@ private:
         }
         const int height = geometry->tab_strip_bounds.bottom -
                            geometry->tab_strip_bounds.top;
-        const RECT configured = CalculateConfiguredTabStripBounds(
-            geometry->group_bounds,
+        const RECT configured = CalculateV31TabStripBounds(
+            geometry->content_bounds,
             height,
+            TabStripSurfaceMode::AttachedAbove,
             config_.tab_strip_alignment,
             config_.tab_strip_width_percent);
+        if (configured.right > configured.left &&
+            configured.bottom > configured.top) {
+            geometry->tab_strip_bounds = configured;
+        }
+    }
+
+    void ApplyMaximizedTabStrip(
+        WindowGroupGeometry* const geometry,
+        const HWND chrome_window) const noexcept {
+        if (geometry == nullptr || !geometry->valid ||
+            chrome_window == nullptr) {
+            return;
+        }
+        const int height = geometry->tab_strip_bounds.bottom -
+                           geometry->tab_strip_bounds.top;
+        const RECT configured = CalculateV31TabStripBounds(
+            geometry->content_bounds,
+            height,
+            TabStripSurfaceMode::MaximizedOverlay,
+            config_.tab_strip_alignment,
+            config_.tab_strip_width_percent,
+            CaptionControlReserveForWindow(chrome_window));
         if (configured.right > configured.left &&
             configured.bottom > configured.top) {
             geometry->tab_strip_bounds = configured;
@@ -1307,6 +1344,7 @@ private:
                 L"Phase 4 group arrangement failed: " + arranged.message;
             return false;
         }
+        tab_strip_.SetSurfaceMode(TabStripSurfaceMode::AttachedAbove);
         DWORD bounds_error = ERROR_SUCCESS;
         if (!tab_strip_.SetBounds(
                 geometry.tab_strip_bounds, &bounds_error)) {
@@ -1335,8 +1373,125 @@ private:
         return true;
     }
 
+    [[nodiscard]] bool ApplyNativeMaximizedGeometry(
+        WindowGroupGeometry geometry,
+        const WindowIdentity& active_identity,
+        const std::wstring_view reason) {
+        ApplyMaximizedTabStrip(&geometry, active_identity.hwnd);
+        if (!geometry.valid || !geometry_before_maximize_.valid) {
+            fatal_error_ =
+                L"V3.1 calculated an invalid native-maximized group geometry.";
+            return false;
+        }
+        const WindowCoordinationResult arranged =
+            placement_controller_.ArrangeAsMaximized(
+                geometry_before_maximize_, active_identity);
+        if (!arranged.succeeded) {
+            fatal_error_ =
+                L"V3.1 native maximize failed: " + arranged.message;
+            return false;
+        }
+        tab_strip_.SetSurfaceMode(TabStripSurfaceMode::MaximizedOverlay);
+        DWORD bounds_error = ERROR_SUCCESS;
+        if (!tab_strip_.SetBounds(
+                geometry.tab_strip_bounds, &bounds_error)) {
+            fatal_error_ =
+                L"Moving the V3.1 maximized overlay failed with Win32 error " +
+                std::to_wstring(bounds_error) + L'.';
+            return false;
+        }
+        if (model_.CanActivate(active_identity)) {
+            static_cast<void>(model_.SetActive(active_identity));
+            if (!UpdateActiveVisual(active_identity)) {
+                fatal_error_ =
+                    L"The V3.1 maximized overlay could not follow the active member.";
+                return false;
+            }
+        }
+        geometry_ = geometry;
+        WriteLine(
+            logger_,
+            L"GROUP_GEOMETRY reason=" + std::wstring(reason) +
+                L" mode=native-maximized left=" +
+                std::to_wstring(geometry.group_bounds.left) + L" top=" +
+                std::to_wstring(geometry.group_bounds.top) + L" right=" +
+                std::to_wstring(geometry.group_bounds.right) + L" bottom=" +
+                std::to_wstring(geometry.group_bounds.bottom) +
+                L" overlay_right=" +
+                std::to_wstring(geometry.tab_strip_bounds.right));
+        return true;
+    }
+
+    [[nodiscard]] bool RefreshNativeMaximizedOverlay(
+        const MonitorGeometry& monitor,
+        const WindowIdentity& active_identity,
+        const std::wstring_view reason) {
+        WindowGroupGeometry proposed =
+            CalculateNativeMaximizedGroupGeometry(
+                monitor.work_area,
+                TabStripHeightForWindow(active_identity.hwnd));
+        ApplyMaximizedTabStrip(&proposed, active_identity.hwnd);
+        if (!proposed.valid) {
+            fatal_error_ =
+                L"V3.1 calculated an invalid maximized overlay refresh.";
+            return false;
+        }
+        tab_strip_.SetSurfaceMode(TabStripSurfaceMode::MaximizedOverlay);
+        if (geometry_.valid &&
+            RectanglesEqual(geometry_.group_bounds, proposed.group_bounds) &&
+            RectanglesEqual(
+                geometry_.tab_strip_bounds, proposed.tab_strip_bounds)) {
+            return true;
+        }
+        DWORD bounds_error = ERROR_SUCCESS;
+        if (!tab_strip_.SetBounds(
+                proposed.tab_strip_bounds, &bounds_error)) {
+            fatal_error_ =
+                L"Refreshing the V3.1 maximized overlay failed with Win32 error " +
+                std::to_wstring(bounds_error) + L'.';
+            return false;
+        }
+        geometry_ = proposed;
+        WriteLine(
+            logger_,
+            L"GROUP_GEOMETRY reason=" + std::wstring(reason) +
+                L" mode=native-maximized-overlay-refresh");
+        return true;
+    }
+
+    [[nodiscard]] std::optional<WindowIdentity>
+    FindNativeStateDriver(const bool maximized) const {
+        const HWND foreground = GetForegroundWindow();
+        std::optional<WindowIdentity> first;
+        for (const ChromeWindowSnapshot& snapshot : registry_.windows()) {
+            if (IsIconic(snapshot.hwnd) != FALSE ||
+                (IsZoomed(snapshot.hwnd) != FALSE) != maximized) {
+                continue;
+            }
+            const WindowIdentity identity = MakeIdentity(snapshot);
+            if (snapshot.hwnd == foreground) {
+                return identity;
+            }
+            if (!first.has_value()) {
+                first = identity;
+            }
+        }
+        return first;
+    }
+
     [[nodiscard]] bool SynchronizeGroupGeometry() {
-        const std::optional<WindowIdentity> driver = GeometryDriver();
+        std::optional<WindowIdentity> driver = GeometryDriver();
+        if (view_state_ == GroupViewState::Maximized) {
+            if (const auto restored = FindNativeStateDriver(false);
+                restored.has_value()) {
+                driver = restored;
+            }
+        } else if (view_state_ == GroupViewState::Normal) {
+            if (const auto maximized = FindNativeStateDriver(true);
+                maximized.has_value()) {
+                driver = maximized;
+            }
+        }
         if (!driver.has_value() || registry_.windows().empty()) {
             return true;
         }
@@ -1388,18 +1543,19 @@ private:
             view_state_ = state_before_minimize_;
             const bool restore_maximized =
                 view_state_ == GroupViewState::Maximized;
-            const WindowGroupGeometry restored_geometry =
-                restore_maximized
-                    ? CalculateWindowGroupGeometry(
+            const bool restored = restore_maximized
+                ? ApplyNativeMaximizedGeometry(
+                      CalculateNativeMaximizedGroupGeometry(
                           monitor.work_area,
-                          TabStripHeightForWindow(driver->hwnd))
-                    : geometry_before_minimize_;
-            if (!ApplyGroupGeometry(
-                    restored_geometry,
-                    *driver,
-                    restore_maximized ? L"restore-maximized"
-                                      : L"restore-normal",
-                    true) ||
+                          TabStripHeightForWindow(driver->hwnd)),
+                      *driver,
+                      L"restore-native-maximized")
+                : ApplyGroupGeometry(
+                      geometry_before_minimize_,
+                      *driver,
+                      L"restore-normal",
+                      true);
+            if (!restored ||
                 !SetTabStripVisibility(true)) {
                 return false;
             }
@@ -1429,13 +1585,12 @@ private:
             if (view_state_ == GroupViewState::Maximized ||
                 IsZoomed(driver->hwnd) != FALSE) {
                 view_state_ = GroupViewState::Maximized;
-                if (!ApplyGroupGeometry(
-                        CalculateWindowGroupGeometry(
+                if (!ApplyNativeMaximizedGeometry(
+                        CalculateNativeMaximizedGroupGeometry(
                             monitor.work_area,
                             TabStripHeightForWindow(driver->hwnd)),
                         *driver,
-                        L"fullscreen-exit-maximized",
-                        true) ||
+                        L"fullscreen-exit-native-maximized") ||
                     !SetTabStripVisibility(true)) {
                     return false;
                 }
@@ -1455,44 +1610,38 @@ private:
             return true;
         }
 
-        if (IsZoomed(driver->hwnd) != FALSE) {
-            if (view_state_ == GroupViewState::Maximized) {
-                view_state_ = GroupViewState::Normal;
-                if (!ApplyGroupGeometry(
-                        geometry_before_maximize_,
-                        *driver,
-                        L"managed-maximize-restore",
-                        true) ||
-                    !SetTabStripVisibility(true)) {
-                    return false;
-                }
-                WriteLine(logger_, L"GROUP_STATE NORMAL");
-                return true;
+        if (view_state_ == GroupViewState::Maximized) {
+            if (IsZoomed(driver->hwnd) != FALSE) {
+                return RefreshNativeMaximizedOverlay(
+                    monitor, *driver, L"native-maximized-stable");
             }
+            view_state_ = GroupViewState::Normal;
+            if (!ApplyGroupGeometry(
+                    geometry_before_maximize_,
+                    *driver,
+                    L"native-maximize-restore",
+                    true) ||
+                !SetTabStripVisibility(true)) {
+                return false;
+            }
+            WriteLine(logger_, L"GROUP_STATE NORMAL");
+            return true;
+        }
+
+        if (IsZoomed(driver->hwnd) != FALSE) {
             geometry_before_maximize_ = geometry_;
             view_state_ = GroupViewState::Maximized;
-            if (!ApplyGroupGeometry(
-                    CalculateWindowGroupGeometry(
+            if (!ApplyNativeMaximizedGeometry(
+                    CalculateNativeMaximizedGroupGeometry(
                         monitor.work_area,
                         TabStripHeightForWindow(driver->hwnd)),
                     *driver,
-                    L"managed-maximize",
-                    true) ||
+                    L"native-maximize") ||
                 !SetTabStripVisibility(true)) {
                 return false;
             }
             WriteLine(logger_, L"GROUP_STATE MAXIMIZED");
             return true;
-        }
-        if (view_state_ == GroupViewState::Maximized) {
-            if (RectanglesEqual(driver_bounds, geometry_.content_bounds)) {
-                return true;
-            }
-            // A title-bar drag from the managed-maximized rectangle behaves
-            // like native drag-to-restore and continues through normal
-            // move/resize synchronization below.
-            view_state_ = GroupViewState::Normal;
-            WriteLine(logger_, L"GROUP_STATE NORMAL reason=title-drag");
         }
 
         const WindowGroupGeometry moved =
@@ -1917,6 +2066,12 @@ private:
                 return false;
             }
             geometry_ = {};
+            geometry_before_minimize_ = {};
+            geometry_before_maximize_ = {};
+            geometry_before_fullscreen_ = {};
+            view_state_ = GroupViewState::Normal;
+            state_before_minimize_ = GroupViewState::Normal;
+            state_before_fullscreen_ = GroupViewState::Normal;
             identities_.clear();
             active_identity_ = {};
             const FixedEntryReport taskbar =
@@ -2036,7 +2191,11 @@ private:
                 return false;
             }
             const WindowCoordinationResult arranged =
-                placement_controller_.Arrange(geometry_, desired_active);
+                view_state_ == GroupViewState::Maximized
+                    ? placement_controller_.ArrangeAsMaximized(
+                          geometry_before_maximize_, desired_active)
+                    : placement_controller_.Arrange(
+                          geometry_, desired_active);
             if (!arranged.succeeded) {
                 fatal_error_ =
                     L"Arranging the changed Chrome group failed: " +
@@ -3376,7 +3535,7 @@ private:
     void ShowAboutDialog() const {
         const std::wstring content =
             L"ChromeTaskbarMerger " + std::wstring(kVersion) +
-            L"\n\nV2 内置标签与 Windows 任务栏 Chrome 单入口工具"
+            L"\n\n内置窗口标签与 Windows 任务栏 Chrome 单入口工具"
             L"\n\n开发人员：杨云召"
             L"\n\nGitHub：" + std::wstring(kV2ProjectUrl) +
             L"\n\n许可证：MIT";

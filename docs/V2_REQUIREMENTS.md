@@ -574,7 +574,7 @@ x64 Debug/Release 的 12/12 CTest 均通过，嵌入 manifest、x64 PE 和 `asIn
 Snap 收敛到右半区；输入 `p` 后任务栏入口与三个原始窗口矩形全部恢复，随后 `q` 正常结束，
 没有 `RECOVERY REQUIRED`。跨显示器/DPI 因未报告相应硬件结果记为 `NOT RUN`，不影响单显示器
 必测基线。受管最大化按钮仍显示“最大化”而非“还原”图标，但点击还原功能正常；该非关键视觉
-差异按用户决定移至 [V3 易用性、视觉完善与缺陷修复计划](V3_REQUIREMENTS.md)，不阻塞 V2。
+差异按用户决定移至 [V3.1 顶部视觉融合与原生最大化](V3_1_REQUIREMENTS.md)，不阻塞 V2。
 Phase 3 自动与必需人工验收全部通过，状态标记为 `PASS`。
 
 ### Phase 4：原子恢复、异常终止和故障注入
@@ -805,7 +805,7 @@ profile 持久化人工验收结果（2026-07-17）：两个真实普通 profile
 窗口继续回退。日志未记录用户输入名称、profile 名称或路径。同 profile 多窗口样本因当前 Chrome
 操作方式无法建立，人工项记为 `N/A`，不阻塞不同 profile 不串用的核心门禁。profile 持久化功能
 验收通过。最大化按钮图标差异已
-按用户决定移至 [V3 易用性、视觉完善与缺陷修复计划](V3_REQUIREMENTS.md)，不再是 V2 发布门禁。
+按用户决定移至 [V3.1 顶部视觉融合与原生最大化](V3_1_REQUIREMENTS.md)，不再是 V2 发布门禁。
 
 登录启动主流程人工验收结果（2026-07-17）：真实注销并重新登录同一 Windows 用户后，最终候选
 EXE 从 `dist/ChromeTaskbarMerger` 以 `--autostart` 自动启动，Release GUI 未出现控制台且进程始终

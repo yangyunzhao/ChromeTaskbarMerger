@@ -79,7 +79,7 @@ namespace {
            "; WindowTabs process check while that provider is selected.\r\n"
            "windowtabs_check_interval_ms=3000\r\n"
            "; Built-in tab strip: left, center, or right.\r\n"
-           "tab_strip_alignment=center\r\n"
+           "tab_strip_alignment=right\r\n"
            "; Built-in strip width: 25 to 100 percent.\r\n"
            "tab_strip_width_percent=60\r\n"
            "; Built-in maximum tab width: 80 to 400 logical pixels.\r\n"

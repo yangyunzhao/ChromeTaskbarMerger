@@ -42,7 +42,7 @@ struct AppConfig {
     bool start_with_windows = false;
     TabProvider tab_provider = TabProvider::BuiltIn;
     bool persist_tab_names_by_profile = false;
-    TabStripAlignment tab_strip_alignment = TabStripAlignment::Center;
+    TabStripAlignment tab_strip_alignment = TabStripAlignment::Right;
     int tab_strip_width_percent = kDefaultTabStripWidthPercent;
     int tab_width_pixels = kDefaultTabWidthPixels;
 };

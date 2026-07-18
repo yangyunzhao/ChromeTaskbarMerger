@@ -23,16 +23,18 @@
 ## Overview
 
 ChromeTaskbarMerger is a lightweight native Windows utility for people who keep
-several Google Chrome windows open. Version 2 adds a built-in tab strip and a
-synchronized window group, so WindowTabs is no longer required. The original
-single-taskbar-entry behavior remains part of the product.
+several Google Chrome windows open. Version 2 introduced a built-in tab strip
+and synchronized window group, so WindowTabs is no longer required. Version 3.1
+adds real native maximize/restore behavior and a compact antialiased tab strip
+that visually integrates with Chrome. The original single-taskbar-entry behavior
+remains part of the product.
 
 The application runs in the notification area. It does not inject code into
 Chrome, enable remote debugging, close browser windows, or modify Chrome data.
 
 ## Features
 
-- Groups 1–5 normal Chrome windows behind a native external tab strip.
+- Groups 1–5 normal Chrome windows behind a compact native external tab strip.
 - Switches, moves, resizes, minimizes, restores, maximizes, and Snaps the group.
 - Keeps exactly one Chrome entry on the Windows taskbar while a group is managed.
 - Tracks Chrome window creation and closure and safely fills available group slots.
@@ -47,10 +49,13 @@ Chrome, enable remote debugging, close browser windows, or modify Chrome data.
 
 ## Quick start
 
-Download
-[`ChromeTaskbarMerger-2.0.0-portable-x64.zip`](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/download/v2.0.0/ChromeTaskbarMerger-2.0.0-portable-x64.zip),
-extract it to a writable directory, and run `ChromeTaskbarMerger.exe`. No installer
-or administrator privileges are required.
+Open the [latest release](https://github.com/yangyunzhao/ChromeTaskbarMerger/releases/latest),
+download the newest `ChromeTaskbarMerger-*-portable-x64.zip`, extract it to a
+writable directory, and run `ChromeTaskbarMerger.exe`. No installer or
+administrator privileges are required.
+
+The `main` branch contains the completed 3.1.0 source baseline. A 3.1.0 binary
+appears on the Releases page only after the separate release step is performed.
 
 The built-in provider is selected by default and does not need WindowTabs. Keep
 1–5 normal, non-minimized Chrome windows open when creating the initial group.
@@ -95,7 +100,7 @@ scan_interval_ms=2000
 tab_provider=builtin
 persist_tab_names_by_profile=false
 windowtabs_check_interval_ms=3000
-tab_strip_alignment=center
+tab_strip_alignment=right
 tab_strip_width_percent=60
 tab_width_px=180
 start_with_windows=false
@@ -172,49 +177,61 @@ ChromeTaskbarMerger.exe --restore-all
 
 ## Validation and limitations
 
-Version 2.0.0 has automated coverage for command parsing, configuration and
-startup migration, profile matching and storage, taskbar/layout recovery,
-window lifecycle and geometry, tab editing/navigation, Explorer rebuild, and
-single-instance behavior. Real Windows 11 validation covered 1/3/5 Chrome
-windows, movement, maximize/minimize/restore, Snap, F11, pause/resume, Explorer
-restart, forced termination recovery, login startup, profile names, modal dialogs,
-normal exit, and idle resources.
+Version 3.1.0 retains the full V2 automated suite and adds coverage for native
+maximize/restore state, compact tab placement, caption-button reserves, invisible
+window-frame correction, per-pixel transparency, DPI scaling, and layered-window
+recovery. Clean x64 Debug and Release builds pass all 15 tests. Real Windows 11
+validation covered the V2 1/3/5-window lifecycle and recovery matrix plus V3.1
+normal/maximized visual integration against WindowTabs reference images.
 
 Known limits:
 
 - Initial built-in grouping accepts at most 5 normal Chrome windows. Additional
   windows opened later remain independent until a slot is available.
-- The managed maximize button may retain the maximize glyph instead of the usual
-  restore glyph; maximize and restore behavior still works. This is tracked for V3.
 - Windows 10, other Chromium browsers, and every multi-monitor/DPI/virtual-desktop
   combination have not been release-qualified.
+- Chrome F11 fullscreen is outside the V3.1 scope. With many native Chrome tabs,
+  the built-in window tabs may cover the rightmost native tabs.
 - Windows Settings or Task Manager may disable a registered startup app; that
   system-level choice takes precedence over the INI setting.
 
 Detailed evidence: [documentation index](docs/README.md),
 [V2 requirements](docs/V2_REQUIREMENTS.md),
 [profile persistence assessment](docs/V2_PROFILE_NAME_PERSISTENCE.md), and
-[V2 manual results](tests/manual_test_plan_v2.md).
+[V2 manual results](tests/manual_test_plan_v2.md), plus the
+[V3.1 requirements](docs/V3_1_REQUIREMENTS.md) and
+[V3.1 validation record](tests/manual_test_plan_v3_1.md).
 
 ## Roadmap
 
-Version 3 is planned as a quality release focused on usability, visual cohesion,
-and bug fixes rather than new product capabilities. Its current priorities are:
+Version 3 is a rolling quality series focused on usability, visual cohesion, and
+bug fixes rather than new product capabilities. Each cohesive improvement ships
+as an independently accepted minor version instead of one long phase plan.
 
-- make the managed maximize/restore button glyph match its real state and action;
-- define and stabilize the built-in tab strip position across normal, maximized,
-  Snapped, F11, DPI, and workspace changes;
-- visually integrate the tab strip with Chrome while maximized, aiming for the
+V3.1 / 3.1.0 completed automated and real-Chrome validation on 2026-07-18 and is
+now frozen. It:
+
+- keeps Chrome natively maximized so its maximize/restore glyph matches the real
+  state and action;
+- stabilizes the built-in tab strip position across normal, maximized,
+  Snapped, DPI, and workspace changes;
+- visually integrates the tab strip with Chrome while maximized, aiming for the
   unified-window feel of WindowTabs without copying or injecting it;
-- finish with regression, recovery, flicker, focus, and resource-use hardening.
+- preserves the existing recovery, focus, resource-use, and provider guarantees.
 
-The work is divided into six gated phases from visual specification and diagnostic
-baselines through a 3.0.0 release candidate. The maximized visual design will be
-confirmed from user-provided reference images before implementation. V2 recovery
-and accessibility guarantees remain mandatory, and unsupported visual techniques
-must safely fall back to the proven 2.0.0 layout.
+The maximized visual target has been confirmed from user-provided WindowTabs
+reference images. V2 recovery and accessibility guarantees remain mandatory, and
+unsupported visual techniques must safely fall back to the proven 2.0.0 layout.
 
-See the full [V3 usability and visual-quality plan](docs/V3_REQUIREMENTS.md).
+The maximized design intentionally does not solve collisions with Chrome's own
+tab strip: with many native Chrome tabs, the rightmost tabs may be covered by the
+built-in window tabs, matching the accepted WindowTabs behavior. Caption buttons
+must always remain clear. Chrome F11 fullscreen is outside the V3 scope.
+
+Any bug or quality improvement discovered after this acceptance is assigned to
+V3.2 rather than reopening V3.1. See the
+[V3 rolling roadmap](docs/V3_ROADMAP.md) and the completed
+[V3.1 requirements](docs/V3_1_REQUIREMENTS.md).
 Requests that add new capabilities are kept in the separate
 [V4 feature backlog](docs/V4_BACKLOG.md) instead of expanding V3.
 

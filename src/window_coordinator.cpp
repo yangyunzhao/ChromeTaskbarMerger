@@ -122,6 +122,23 @@ WindowGroupGeometry CalculateWindowGroupGeometryFromContentBounds(
         ConstrainToBounds(desired_group, work_area), tab_strip_height);
 }
 
+WindowGroupGeometry CalculateNativeMaximizedGroupGeometry(
+    const RECT& work_area,
+    const int tab_strip_height) noexcept {
+    WindowGroupGeometry geometry;
+    geometry.group_bounds = work_area;
+    if (RectangleWidth(work_area) < 240 || tab_strip_height <= 0 ||
+        RectangleHeight(work_area) < std::max(tab_strip_height + 1, 160)) {
+        return geometry;
+    }
+    geometry.content_bounds = work_area;
+    geometry.tab_strip_bounds = work_area;
+    geometry.tab_strip_bounds.bottom =
+        geometry.tab_strip_bounds.top + tab_strip_height;
+    geometry.valid = true;
+    return geometry;
+}
+
 int ScalePixelsForDpi(const int pixels, const UINT dpi) noexcept {
     if (pixels <= 0 || dpi == 0) {
         return 0;
@@ -539,6 +556,131 @@ WindowCoordinationResult WindowGroupPlacementController::ArrangeAsNormal(
     }
 
     return Arrange(geometry, active_identity);
+}
+
+WindowCoordinationResult
+WindowGroupPlacementController::ArrangeAsMaximized(
+    const WindowGroupGeometry& restore_geometry,
+    const WindowIdentity& active_identity) {
+    WindowCoordinationResult result;
+    if (!restore_geometry.valid) {
+        result.win32_error = ERROR_INVALID_STATE;
+        result.message =
+            L"The native-maximized restore geometry is unavailable.";
+        return result;
+    }
+    std::vector<PlacementRecord*> participants;
+    participants.reserve(records_.size());
+    bool active_found = false;
+    for (PlacementRecord& record : records_) {
+        if (!record.participating || record.invalidated) {
+            continue;
+        }
+        result.identity = record.identity;
+        const WindowActivationResult validation =
+            IdentityFailure(record.identity, true);
+        if (!validation.succeeded) {
+            result.win32_error = validation.win32_error;
+            result.message = validation.message;
+            return result;
+        }
+        active_found = active_found || WindowIdentitiesMatch(
+            record.identity, active_identity);
+        participants.push_back(&record);
+    }
+    if (participants.empty() || !active_found) {
+        result.win32_error = ERROR_NOT_FOUND;
+        result.message =
+            L"The active window is not part of the native-maximized group.";
+        return result;
+    }
+
+    // Establish the restore obligation before the first native state change.
+    for (PlacementRecord* const record : participants) {
+        record->position_modified = true;
+    }
+    for (PlacementRecord* const record : participants) {
+        result.identity = record->identity;
+        if (IsIconic(record->identity.hwnd) == FALSE &&
+            IsZoomed(record->identity.hwnd) == FALSE &&
+            SetWindowPos(
+                record->identity.hwnd,
+                nullptr,
+                restore_geometry.content_bounds.left,
+                restore_geometry.content_bounds.top,
+                RectangleWidth(restore_geometry.content_bounds),
+                RectangleHeight(restore_geometry.content_bounds),
+                SWP_NOZORDER | SWP_NOACTIVATE) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message =
+                L"Aligning native restore geometry before maximize failed.";
+            return result;
+        }
+        WINDOWPLACEMENT current{};
+        current.length = sizeof(current);
+        if (GetWindowPlacement(record->identity.hwnd, &current) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message =
+                L"Reading native state before native maximize failed.";
+            return result;
+        }
+        current.flags = 0;
+        current.showCmd = SW_SHOWMAXIMIZED;
+        if (SetWindowPlacement(record->identity.hwnd, &current) == FALSE) {
+            result.win32_error = GetLastError();
+            result.message = L"Applying native maximized state failed.";
+            return result;
+        }
+        if (IsIconic(record->identity.hwnd) != FALSE ||
+            IsZoomed(record->identity.hwnd) == FALSE) {
+            result.win32_error = ERROR_INVALID_STATE;
+            result.message =
+                L"The window did not enter native maximized state.";
+            return result;
+        }
+    }
+
+    // Keep the active member above its peers without activating a different
+    // window or changing the native maximized rectangles.
+    for (PlacementRecord* const record : participants) {
+        if (WindowIdentitiesMatch(record->identity, active_identity)) {
+            continue;
+        }
+        if (SetWindowPos(
+                record->identity.hwnd,
+                active_identity.hwnd,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) == FALSE) {
+            result.identity = record->identity;
+            result.win32_error = GetLastError();
+            result.message =
+                L"Ordering a native-maximized group member failed.";
+            return result;
+        }
+    }
+    if (SetWindowPos(
+            active_identity.hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) == FALSE) {
+        result.identity = active_identity;
+        result.win32_error = GetLastError();
+        result.message =
+            L"Ordering the active native-maximized group member failed.";
+        return result;
+    }
+
+    result.succeeded = true;
+    result.identity = {};
+    result.message =
+        L"The windows now share native maximized state.";
+    return result;
 }
 
 WindowGroupRestoreReport WindowGroupPlacementController::RestoreAll() {

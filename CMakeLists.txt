@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     ChromeTaskbarMerger
-    VERSION 2.0.0
+    VERSION 3.1.0
     DESCRIPTION "Group Chrome windows with native tabs and one taskbar entry"
     LANGUAGES CXX
 )
@@ -147,11 +147,14 @@ target_link_libraries(
         Advapi32
         Bcrypt
         Comctl32
+        D2d1
+        Dwrite
         Dwmapi
         Imm32
         Ole32
         Shell32
         UIAutomationCore
+        Windowscodecs
 )
 
 add_executable(

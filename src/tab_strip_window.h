@@ -10,6 +10,13 @@
 #include <string_view>
 #include <vector>
 
+struct ID2D1Factory;
+struct ID2D1DCRenderTarget;
+struct IDWriteFactory;
+struct IDWriteTextFormat;
+struct IDWriteInlineObject;
+struct IWICImagingFactory;
+
 namespace ctm {
 
 struct TabStripItem {
@@ -62,6 +69,8 @@ public:
         bool visible,
         DWORD* error_code) noexcept;
     void SetMaximumTabWidth(int logical_pixels) noexcept;
+    void SetContentAlignment(TabStripAlignment alignment) noexcept;
+    void SetSurfaceMode(TabStripSurfaceMode mode) noexcept;
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsHealthy() const noexcept;
@@ -90,6 +99,11 @@ private:
     void ScrollByTabs(int delta) noexcept;
     void EnsureActiveVisible() noexcept;
     void RecalculateLayout() noexcept;
+    [[nodiscard]] bool ApplyAvailableBounds(
+        DWORD* error_code) noexcept;
+    [[nodiscard]] bool EnsureGraphicsResources() noexcept;
+    void ReleaseDeviceResources() noexcept;
+    void ReleaseGraphicsResources() noexcept;
     void UpdateDpiResources() noexcept;
     void Paint() noexcept;
 
@@ -107,9 +121,23 @@ private:
     std::vector<TabStripItem> items_;
     WindowIdentity active_identity_;
     TabStripLayout layout_;
+    RECT available_bounds_{};
     UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     int maximum_tab_width_pixels_ = kDefaultTabWidthPixels;
+    TabStripAlignment content_alignment_ = TabStripAlignment::Left;
+    TabStripSurfaceMode surface_mode_ =
+        TabStripSurfaceMode::AttachedAbove;
     HFONT font_ = nullptr;
+    ID2D1Factory* d2d_factory_ = nullptr;
+    ID2D1DCRenderTarget* render_target_ = nullptr;
+    HDC surface_dc_ = nullptr;
+    HBITMAP surface_bitmap_ = nullptr;
+    HGDIOBJ previous_surface_bitmap_ = nullptr;
+    SIZE surface_size_{};
+    IDWriteFactory* dwrite_factory_ = nullptr;
+    IDWriteTextFormat* text_format_ = nullptr;
+    IDWriteInlineObject* trimming_sign_ = nullptr;
+    IWICImagingFactory* wic_factory_ = nullptr;
     HWND name_editor_ = nullptr;
     WindowIdentity editing_identity_;
     bool edit_end_pending_ = false;

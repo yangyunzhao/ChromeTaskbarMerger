@@ -1,4 +1,4 @@
-# ChromeTaskbarMerger 2.0.0 便携版（x64）
+# ChromeTaskbarMerger 3.1.0 便携版（x64）
 
 ## 使用前提
 
@@ -7,6 +7,11 @@
 - 也可选择 WindowTabs 标签模式，保留其标签风格。
 
 本程序使用 `ITaskbarList::DeleteTab/AddTab`，只改变 Windows 任务栏注册状态，不关闭或修改 Chrome 配置文件。被合并的窗口可能不会出现在 Alt+Tab 中，这是当前版本的已知兼容性代价。
+
+3.1.0 在普通窗口下只显示紧贴 Chrome 上边缘的圆角标签形状；Windows 最大化后，Chrome
+保持真实原生最大化，标签进入顶部靠右区域并避让最小化、还原和关闭按钮。新配置默认右对齐；已有
+`left` 或 `center` 配置继续生效。F11 真正全屏不在本版本支持范围内；Chrome 原生网页标签很多时
+允许被内置窗口标签局部覆盖。
 
 ## 启动
 
@@ -34,7 +39,7 @@ scan_interval_ms=2000
 tab_provider=builtin
 persist_tab_names_by_profile=false
 windowtabs_check_interval_ms=3000
-tab_strip_alignment=center
+tab_strip_alignment=right
 tab_strip_width_percent=60
 tab_width_px=180
 start_with_windows=false

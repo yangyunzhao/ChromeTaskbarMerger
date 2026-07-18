@@ -5,6 +5,7 @@
 #include "window_identity_query.h"
 
 #include <Windows.h>
+#include <dwmapi.h>
 #include <windowsx.h>
 
 #include <array>
@@ -47,6 +48,24 @@ void Expect(const bool condition, const std::string_view description) {
         }
     }
     return false;
+}
+
+[[nodiscard]] RECT AdjustForOwnerVisibleFrame(
+    const HWND owner,
+    const RECT& available_bounds) noexcept {
+    RECT owner_window_bounds{};
+    RECT owner_visible_bounds{};
+    if (owner == nullptr ||
+        GetWindowRect(owner, &owner_window_bounds) == FALSE ||
+        FAILED(DwmGetWindowAttribute(
+            owner,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &owner_visible_bounds,
+            sizeof(owner_visible_bounds)))) {
+        return available_bounds;
+    }
+    return ctm::AdjustTabStripBoundsForInvisibleFrame(
+        available_bounds, owner_window_bounds, owner_visible_bounds);
 }
 
 [[nodiscard]] bool CurrentProcessOwnsWindowOfClass(
@@ -360,6 +379,17 @@ void TestGeometryPolicy() {
                    {.left = -1920, .top = 0, .right = 0, .bottom = 1080},
                    1),
            "fullscreen detection should distinguish monitor bounds from its work area");
+
+    const ctm::WindowGroupGeometry native_maximized =
+        ctm::CalculateNativeMaximizedGroupGeometry(
+            work_area, ctm::kV2TabStripHeight);
+    Expect(native_maximized.valid &&
+               RectanglesEqual(native_maximized.group_bounds, work_area) &&
+               RectanglesEqual(native_maximized.content_bounds, work_area) &&
+               native_maximized.tab_strip_bounds.top == work_area.top &&
+               native_maximized.tab_strip_bounds.bottom ==
+                   work_area.top + ctm::kV2TabStripHeight,
+           "native maximize geometry should overlay the work area without shortening Chrome");
 }
 
 void TestSyntheticWindowGroupingSwitchAndRestore() {
@@ -455,6 +485,7 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
         DeterministicTestActivationGateway gateway;
         ctm::TabActivationCoordinator activation(&model, &gateway);
         ctm::TabStripWindow strip;
+        strip.SetContentAlignment(ctm::TabStripAlignment::Right);
         CoordinatingTabSink sink(&activation, &strip);
         DWORD strip_error = ERROR_SUCCESS;
         const bool strip_created = strip.Create(
@@ -467,6 +498,19 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
             &strip_error);
         Expect(strip_created && strip.IsHealthy(),
                "the temporary native tab strip should be healthy");
+        const LONG_PTR strip_extended_style = GetWindowLongPtrW(
+            strip.hwnd(), GWL_EXSTYLE);
+        Expect((strip_extended_style & WS_EX_LAYERED) != 0,
+               "the V3.1 tab window should use per-pixel transparency so gaps do not expose an opaque backing surface");
+        HRGN strip_region = CreateRectRgn(0, 0, 0, 0);
+        const int strip_region_type = strip_region != nullptr
+            ? GetWindowRgn(strip.hwnd(), strip_region)
+            : ERROR;
+        Expect(strip_region_type == ERROR,
+               "the V3.1 tab window should avoid a one-bit Win32 region so Direct2D and DWM can antialias its edges");
+        if (strip_region != nullptr) {
+            DeleteObject(strip_region);
+        }
         model.SetTabStripHealthy(strip.IsHealthy());
         for (const ctm::WindowIdentity& identity : identities) {
             const ctm::TabActivationReport verified =
@@ -617,8 +661,17 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
         }
         RECT strip_bounds{};
         GetWindowRect(strip.hwnd(), &strip_bounds);
+        const RECT expected_moved_strip =
+            ctm::CalculateCompactTabStripBounds(
+                AdjustForOwnerVisibleFrame(
+                    GetWindow(strip.hwnd(), GW_OWNER),
+                    moved_geometry.tab_strip_bounds),
+                identities.size(),
+                GetDpiForWindow(strip.hwnd()),
+                ctm::kDefaultTabWidthPixels,
+                ctm::TabStripAlignment::Right);
         Expect(RectanglesEqual(
-                   strip_bounds, moved_geometry.tab_strip_bounds),
+                   strip_bounds, expected_moved_strip),
                "the external tab strip should remain attached above the moved group");
 
         for (const ctm::WindowIdentity& identity : identities) {
@@ -645,57 +698,84 @@ void TestSyntheticWindowGroupingSwitchAndRestore() {
                    "every minimized member should become normal again");
         }
 
-        const ctm::WindowGroupGeometry maximized_geometry =
-            ctm::CalculateWindowGroupGeometry(
-                work_area, ctm::kV2TabStripHeight);
-        for (const ctm::WindowIdentity& identity : identities) {
-            ShowWindow(identity.hwnd, SW_MAXIMIZE);
-        }
-        Expect(placement.ArrangeAsNormal(
-                   maximized_geometry, identities[1]).succeeded &&
+        const RECT maximized_strip_bounds =
+            ctm::CalculateV31TabStripBounds(
+                work_area,
+                ctm::kV2TabStripHeight,
+                ctm::TabStripSurfaceMode::MaximizedOverlay,
+                ctm::TabStripAlignment::Right,
+                60,
+                140);
+        Expect(placement.ArrangeAsMaximized(
+                   moved_geometry, identities[1]).succeeded &&
                    strip.SetBounds(
-                       maximized_geometry.tab_strip_bounds, &bounds_error),
-               "managed maximize should normalize native state and reserve the monitor top for its external strip");
+                       maximized_strip_bounds, &bounds_error),
+               "V3.1 maximize should retain native state and overlay the strip in the caption-safe area");
         for (const ctm::WindowIdentity& identity : identities) {
-            RECT current{};
-            GetWindowRect(identity.hwnd, &current);
             const LONG_PTR style = GetWindowLongPtrW(
                 identity.hwnd, GWL_STYLE);
-            Expect(IsZoomed(identity.hwnd) == FALSE &&
-                       RectanglesEqual(
-                           current, maximized_geometry.content_bounds),
-                   "each managed-maximized member should be native-normal below the external strip");
+            Expect(IsZoomed(identity.hwnd) != FALSE &&
+                       IsIconic(identity.hwnd) == FALSE,
+                   "each V3.1 maximized member should remain natively maximized");
             Expect((style & WS_CAPTION) != 0 &&
                        (style & WS_SYSMENU) != 0 &&
                        (style & WS_MINIMIZEBOX) != 0 &&
                        (style & WS_MAXIMIZEBOX) != 0,
-                   "managed maximize should preserve the native caption and all system buttons");
+                   "native maximize should preserve the caption and all system buttons");
+        }
+        GetWindowRect(strip.hwnd(), &strip_bounds);
+        const RECT expected_maximized_strip =
+            ctm::CalculateCompactTabStripBounds(
+                maximized_strip_bounds,
+                identities.size(),
+                GetDpiForWindow(strip.hwnd()),
+                ctm::kDefaultTabWidthPixels,
+                ctm::TabStripAlignment::Right);
+        Expect(RectanglesEqual(strip_bounds, expected_maximized_strip) &&
+                   strip_bounds.right < work_area.right,
+               "the maximized overlay should leave a non-overlapping caption-control reserve");
+
+        Expect(SetWindowPos(
+                   identities[2].hwnd,
+                   HWND_TOP,
+                   0,
+                   0,
+                   0,
+                   0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE,
+               "a maximized peer should be raisable without changing its native state");
+        DWORD maximized_owner_error = ERROR_SUCCESS;
+        Expect(strip.SetOwner(
+                   identities[2].hwnd, &maximized_owner_error) &&
+                   strip.SetActive(identities[2]) &&
+                   GetWindow(strip.hwnd(), GW_OWNER) == identities[2].hwnd &&
+                   WindowIsAbove(strip.hwnd(), identities[2].hwnd),
+               "the overlay should follow the active maximized owner and remain above it");
+        for (const ctm::WindowIdentity& identity : identities) {
+            Expect(IsZoomed(identity.hwnd) != FALSE,
+                   "switching the maximized owner must not normalize any peer");
         }
 
         for (const ctm::WindowIdentity& identity : identities) {
             ShowWindow(identity.hwnd, SW_MINIMIZE);
         }
-        Expect(placement.ArrangeAsNormal(
-                   maximized_geometry, identities[1]).succeeded,
-               "restoring a minimized managed-maximized group should reapply its constrained geometry");
+        Expect(placement.ArrangeAsMaximized(
+                   moved_geometry, identities[1]).succeeded,
+               "restoring a minimized V3.1 group should reapply native maximized state");
         for (const ctm::WindowIdentity& identity : identities) {
-            RECT current{};
-            GetWindowRect(identity.hwnd, &current);
             Expect(IsIconic(identity.hwnd) == FALSE &&
-                       IsZoomed(identity.hwnd) == FALSE &&
-                       RectanglesEqual(
-                           current, maximized_geometry.content_bounds),
-                   "every minimized managed-maximized member should restore below the external strip");
+                       IsZoomed(identity.hwnd) != FALSE,
+                   "every minimized V3.1 member should restore as natively maximized");
         }
 
-        ShowWindow(identities[1].hwnd, SW_MAXIMIZE);
-        Expect(IsZoomed(identities[1].hwnd) != FALSE,
-               "a second native maximize request should be observable as the managed restore gesture");
+        ShowWindow(identities[1].hwnd, SW_RESTORE);
+        Expect(IsZoomed(identities[1].hwnd) == FALSE,
+               "the native restore button should produce a real normal-state observation");
         Expect(placement.ArrangeAsNormal(
                    moved_geometry, identities[1]).succeeded &&
                    strip.SetBounds(
                        moved_geometry.tab_strip_bounds, &bounds_error),
-               "the managed restore gesture should recover the prior normal group rectangle");
+               "the native restore observation should recover the prior normal group rectangle");
         for (const ctm::WindowIdentity& identity : identities) {
             RECT current{};
             GetWindowRect(identity.hwnd, &current);

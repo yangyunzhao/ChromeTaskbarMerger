@@ -11,7 +11,7 @@ $distributionRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $repositoryRoot 'dist'))
 $portableDirectory = [System.IO.Path]::GetFullPath(
     (Join-Path $distributionRoot 'ChromeTaskbarMerger'))
-$version = '2.0.0'
+$version = '3.1.0'
 $archivePath = [System.IO.Path]::GetFullPath(
     (Join-Path $distributionRoot "ChromeTaskbarMerger-$version-portable-x64.zip"))
 $checksumPath = [System.IO.Path]::GetFullPath(
@@ -40,6 +40,12 @@ if (Test-Path -LiteralPath $buildDirectory) {
 if (Test-Path -LiteralPath $portableDirectory) {
     Remove-Item -LiteralPath $portableDirectory -Recurse -Force
 }
+Get-ChildItem -LiteralPath $distributionRoot -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'ChromeTaskbarMerger-*-portable-x64.zip' } |
+    ForEach-Object {
+        Assert-PathWithinRepository -Path $_.FullName
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
 }

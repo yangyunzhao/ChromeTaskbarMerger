@@ -147,7 +147,7 @@ void TestMissingConfigurationUsesDefaults() {
     Expect(!result.config.persist_tab_names_by_profile,
            "profile-linked tab names should be opt-in by default");
     Expect(result.config.tab_strip_alignment ==
-               ctm::TabStripAlignment::Center &&
+               ctm::TabStripAlignment::Right &&
                result.config.tab_strip_width_percent == 60 &&
                result.config.tab_width_pixels == 180,
            "a missing configuration should use safe built-in layout defaults");
@@ -256,7 +256,7 @@ void TestInvalidV2SettingsFallBackWithoutDiscardingValidValues() {
     const ctm::AppConfigLoadResult result = ctm::LoadAppConfig(path);
     Expect(result.config.tab_provider == ctm::TabProvider::BuiltIn &&
                result.config.tab_strip_alignment ==
-                   ctm::TabStripAlignment::Center &&
+                   ctm::TabStripAlignment::Right &&
                result.config.tab_strip_width_percent == 60 &&
                result.config.tab_width_pixels == 180,
            "invalid V2 settings should retain their safe defaults");
